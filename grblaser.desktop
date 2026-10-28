@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Grblaser
+Comment=Perangkat lunak laser GRBL (layer ala LightBurn, gambar ala LaserGRBL)
+Exec=grblaser %F
+Terminal=false
+Icon=applications-graphics
+Categories=Graphics;Engineering;
+MimeType=image/svg+xml;image/png;image/jpeg;image/vnd.dxf;

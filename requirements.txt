@@ -1,0 +1,8 @@
+PyQt5>=5.15
+pyserial>=3.5
+Pillow>=10
+numpy>=1.24
+svgelements>=1.9
+ezdxf>=1.1
+pytest>=7
+shapely>=2.0   # opsional: boolean & offset
