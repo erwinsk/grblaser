@@ -21,6 +21,8 @@ from ..project import load_project, save_project
 from ..sender import GrblSender
 from ..toolpath import build_job
 from .canvas import Canvas
+from .. import preflight
+from ..autosave import Autosave
 from ..profiles import Profiles
 from .dialogs import ArrayDialog, DeviceDialog, OffsetDialog, TextDialog
 from .panels import (ConsolePanel, ImagePanel, JobPanel, LaserPanel, LayerPanel, PosSizeBar,
@@ -120,6 +122,12 @@ class MainWindow(QMainWindow):
         self._zoom_timer.timeout.connect(lambda: self.lbl_zoom.setText("%d%%" % round(self.canvas.zoom / 3.78 * 100)
                                                                        if False else "%.2f px/mm" % self.canvas.zoom))
         self._zoom_timer.start(300)
+
+        self.autosave = Autosave()
+        self._autosaved_rev = -1
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self.autosave_now)
+        self._autosave_timer.start(45000)
 
         self._update_title()
         self._set_job_buttons("idle")
@@ -988,7 +996,46 @@ class MainWindow(QMainWindow):
                                  QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
         if r == QMessageBox.Save:
             return self.save_project()
-        return r == QMessageBox.Discard
+        if r == QMessageBox.Discard:
+            self.autosave.clear()
+            return True
+        return False
+
+    # ------------------------------------------------------------------ simpan otomatis
+    def autosave_now(self):
+        """Salin proyek ke folder cadangan bila ada perubahan sejak penyimpanan otomatis terakhir."""
+        if not self.dirty or self._autosaved_rev == self.rev or self.tasks.busy:
+            return False
+        if self.autosave.write(self.project):
+            self._autosaved_rev = self.rev
+            return True
+        return False
+
+    def check_recovery(self):
+        """Tawarkan pemulihan bila sesi sebelumnya berakhir tanpa menyimpan (crash/mati listrik)."""
+        inf = self.autosave.info()
+        if not inf:
+            return False
+        orig, ts = inf
+        when = time.strftime("%d %b %Y %H:%M", time.localtime(ts))
+        nm = os.path.basename(orig) if orig else "proyek tanpa judul"
+        r = QMessageBox.question(self, "Pulihkan pekerjaan?",
+                                 f"Ditemukan salinan otomatis yang belum tersimpan ({nm}, {when}).\n"
+                                 "Pulihkan sekarang?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if r != QMessageBox.Yes:
+            self.autosave.clear()
+            return False
+        try:
+            pr = self.autosave.load()
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Gagal memulihkan", str(e))
+            self.autosave.clear()
+            return False
+        self._set_project(pr)
+        self.dirty = True
+        self._update_title()
+        self.note("Pekerjaan dipulihkan dari salinan otomatis. Simpan untuk mempertahankannya.", 8000)
+        return True
 
     def _set_project(self, pr):
         self.project = pr
@@ -1023,8 +1070,39 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Gagal membuka", str(e))
             return
         self._remember_dir(path)
+        self._resolve_project_device(pr)
         self._set_project(pr)
+        self.laser_panel.reload_profiles()
         self.console.add("info", f"Proyek dibuka: {path}")
+
+    def _resolve_project_device(self, pr):
+        """Proyek menyimpan mesin pembuatnya. Bila berbeda dari mesin aktif, tanyakan mesin mana yang dipakai.
+
+        Koordinat desain bergantung pada area kerja & asal mesin, jadi pilihannya eksplisit:
+        pakai profil proyek (diambil dari profil tersimpan bila ada) atau tetap pakai mesin aktif."""
+        cur, fd = self.project.device, pr.device
+        if fd.same_machine(cur):
+            pr.device = cur
+            return "same"
+        box = QMessageBox(QMessageBox.Question, "Mesin proyek berbeda",
+                          f"Proyek ini dibuat untuk mesin \"{fd.name}\" ({fd.bed_w:g}×{fd.bed_h:g} mm, "
+                          f"asal {'kiri-bawah' if fd.origin == 'bottom-left' else 'kiri-atas'}).\n"
+                          f"Mesin aktif: \"{cur.name}\" ({cur.bed_w:g}×{cur.bed_h:g} mm).\n\n"
+                          "Pakai mesin dari proyek, atau tetap pakai mesin aktif?", QMessageBox.NoButton, self)
+        b_proj = box.addButton("Pakai mesin proyek", QMessageBox.AcceptRole)
+        box.addButton("Tetap mesin aktif", QMessageBox.RejectRole)
+        box.setDefaultButton(b_proj)
+        box.exec_()
+        if box.clickedButton() is b_proj:
+            saved = self.profiles.get(fd.name)
+            if saved is not None and saved.same_machine(fd):
+                pr.device = saved          # profil tersimpan memuat port/titik awal terbaru
+            else:
+                self.profiles.save(fd)     # profil baru dari proyek
+            self.settings.setValue("device", json.dumps(pr.device.to_dict()))
+            return "project"
+        pr.device = cur
+        return "active"
 
     def save_project(self, save_as=False):
         path = self.project.path
@@ -1041,6 +1119,7 @@ class MainWindow(QMainWindow):
             return False
         self._remember_dir(path)
         self.dirty = False
+        self.autosave.clear()
         self._update_title()
         self.note("Tersimpan: " + path)
         return True
@@ -1177,6 +1256,8 @@ class MainWindow(QMainWindow):
                 f.write("\n".join(lines) + "\n")
             self._remember_dir(path)
             self.console.add("info", f"G-code disimpan: {path} ({len(lines)} baris, estimasi {fmt_time(job.time_s)})")
+            for i in preflight.check(self.project, self.project.device, None, self._only_ids()):
+                self.console.add("err" if i.level == "error" else "info", str(i))
             self.note(f"G-code disimpan ({len(lines)} baris)")
 
         self._run_job("Membuat G-code…", ready, gcode=True, comments=True)
@@ -1194,6 +1275,22 @@ class MainWindow(QMainWindow):
 
         self._run_job("Menghitung bingkai…", ready, need_t=True)
 
+    def _confirm_start(self, msg, has_warn):
+        """Dialog mulai pekerjaan; bila ada peringatan, tombol bawaan = Tidak."""
+        return QMessageBox.question(self, "Mulai pekerjaan", msg, QMessageBox.Yes | QMessageBox.No,
+                                    QMessageBox.No if has_warn else QMessageBox.Yes) == QMessageBox.Yes
+
+    def _ensure_grbl_settings(self, wait_ms=1000):
+        """Baca $$ sekali (jika belum) agar pemeriksaan bisa membandingkan $30/$130/$131/$32."""
+        s = self.sender
+        if not s.connected or s._running or s.settings:
+            return
+        s.request_settings()
+        t0 = time.time()
+        while "$30" not in s.settings and (time.time() - t0) * 1000 < wait_ms:
+            QApplication.processEvents()
+            time.sleep(0.02)
+
     def _need_ready(self):
         s = self.sender
         if self.tasks.busy:
@@ -1209,20 +1306,24 @@ class MainWindow(QMainWindow):
     def start_job(self):
         if not self._need_ready():
             return
+        self._ensure_grbl_settings()
 
         def ready(res):
             job, T = res["job"], res["T"]
             self._preview_ready(res)
             lines = res["lines"]
             dev = self.project.device
-            mb = machine_bounds(T, job.bounds)
+            issues = preflight.check(self.project, dev, self.sender.settings, self._only_ids())
+            if preflight.has_errors(issues):
+                QMessageBox.critical(self, "Tidak bisa memulai",
+                                     "Perbaiki dulu:\n\n" + preflight.format_issues(issues))
+                return
             msg = (f"Layer dikerjakan: {job.layers_used}\nEstimasi waktu: {fmt_time(job.time_s)}\n"
                    f"Baris G-code: {len(lines)}\n")
-            if dev.start_from == "absolute" and (mb[0] < -0.01 or mb[1] < -0.01 or mb[2] > dev.bed_w + 0.01
-                                                 or mb[3] > dev.bed_h + 0.01):
-                msg += "\n⚠ Sebagian pekerjaan berada di luar area kerja mesin; GRBL mungkin ALARM (soft limit).\n"
+            if issues:
+                msg += "\nPeriksa dulu:\n" + preflight.format_issues(issues) + "\n"
             msg += "\nPastikan kacamata pelindung terpasang & bahan siap. Mulai?"
-            if QMessageBox.question(self, "Mulai pekerjaan", msg) != QMessageBox.Yes:
+            if not self._confirm_start(msg, bool(issues)):
                 return
             self._job_kind = "job"
             self._job_t0 = time.time()
@@ -1336,6 +1437,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             e.ignore()
             return
+        self.autosave.clear()          # keluar normal: tidak ada yang perlu dipulihkan
         self.save_current_profile()
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("state", self.saveState())

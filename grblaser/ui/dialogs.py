@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QFontDatabase, QPainterPath
 from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QFontComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout)
+                             QInputDialog, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout)
 
 from ..model import Device, Poly, PathShape
 
@@ -82,9 +82,11 @@ class DeviceDialog(QDialog):
             bs.clicked.connect(self._save_profile)
             bd = QPushButton("Hapus")
             bd.clicked.connect(self._delete_profile)
+            br = QPushButton("Ganti nama")
+            br.clicked.connect(self._rename_profile)
             pr.addWidget(QLabel("Profil"))
             pr.addWidget(self.prof, 1)
-            for b in (bl, bs, bd):
+            for b in (bl, bs, br, bd):
                 pr.addWidget(b)
             lay.addLayout(pr)
         lay.addLayout(f)
@@ -129,6 +131,20 @@ class DeviceDialog(QDialog):
         self.prof.clear()
         self.prof.addItems(self.profiles.names())
         self.prof.setCurrentText(d.name)
+
+    def _rename_profile(self):
+        old = self.prof.currentText()
+        if not old:
+            return
+        new, ok = QInputDialog.getText(self, "Ganti nama profil", "Nama baru:", text=old)
+        if not ok:
+            return
+        if self.profiles.rename(old, new):
+            if self.name.text() == old:
+                self.name.setText(new.strip())
+            self.prof.clear()
+            self.prof.addItems(self.profiles.names())
+            self.prof.setCurrentText(new.strip())
 
     def _delete_profile(self):
         if self.profiles.delete(self.prof.currentText()):

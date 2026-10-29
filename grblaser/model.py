@@ -91,6 +91,12 @@ class Device:
     def from_user(self, X, Y):
         return (X, self.bed_h - Y) if self.origin == "bottom-left" else (X, Y)
 
+    def same_machine(self, other):
+        """Mesin yang sama untuk keperluan koordinat: nama, area kerja, asal, dan S maks."""
+        return (self.name == other.name and abs(self.bed_w - other.bed_w) < 1e-6
+                and abs(self.bed_h - other.bed_h) < 1e-6 and self.origin == other.origin
+                and self.s_max == other.s_max)
+
     def origin_anchor(self):
         """Indeks 0..8 (kolom + 3*baris) titik kotak pembatas yang paling dekat dengan asal mesin."""
         return 6 if self.origin == "bottom-left" else 0

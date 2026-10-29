@@ -110,6 +110,12 @@ Format proyek: `.glz` (JSON; gambar tersimpan sebagai PNG base64).
 Lihat [`CONTRIBUTING.md`](CONTRIBUTING.md), [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), [`SECURITY.md`](SECURITY.md), dan [`CHANGELOG.md`](CHANGELOG.md).
 Arsitektur singkat: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Pembaruan (v0.4)
+
+- **Pemeriksaan sebelum jalan**: sebelum *Mulai*, aplikasi memeriksa objek di luar area kerja, daya/kecepatan layer tak valid, dan kecocokan S maks, area kerja, dan `$32` dengan mesin (dibaca dari `$$`). Kesalahan memblokir; peringatan harus disetujui.
+- **Simpan otomatis**: salinan berkala di `~/.local/share/grblaser/autosave.glz`; ditawarkan untuk dipulihkan setelah crash.
+- **Mesin proyek & profil**: proyek mengingat mesin pembuatnya dan menanyakan bila berbeda dari mesin aktif; perubahan titik awal/jangkar tersimpan otomatis ke profil; profil bisa diganti namanya.
+
 ## Batasan saat ini
 
 - Gambar raster hanya bisa diputar kelipatan 90° (gunakan *Sudut pindai* untuk memiringkan hasil).

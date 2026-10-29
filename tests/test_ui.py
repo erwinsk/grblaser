@@ -243,7 +243,7 @@ class TestUI(unittest.TestCase):
             self.w.start_job()
             self.assertTrue(wait(lambda: "done" in states, 60), states)
             expected = len(clean_gcode(self.run_job(gcode=True, comments=False)["lines"]))
-            self.assertEqual(len(g.lines), expected)
+            self.assertEqual(len([l for l in g.lines if l.strip() != "$$"]), expected)
             self.assertFalse(g.overflow)
             self.assertEqual(s.error_count, 0)
             # bingkai

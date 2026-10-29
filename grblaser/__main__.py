@@ -12,6 +12,7 @@ def main():
     app.setStyle("Fusion")
     w = MainWindow()
     w.show()
+    w.check_recovery()
     if len(sys.argv) > 1:
         w.import_files(sys.argv[1:])
     sys.exit(app.exec_())

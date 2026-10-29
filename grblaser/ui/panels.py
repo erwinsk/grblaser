@@ -1050,7 +1050,7 @@ class JobPanel(QWidget):
         self.sel_only = QCheckBox("Hanya objek terpilih")
         self.ret = QCheckBox("Kembali ke titik awal setelah selesai")
         self.ret.setChecked(dev.end_return == "origin")
-        self.ret.toggled.connect(lambda v: setattr(self.win.project.device, "end_return", "origin" if v else "none"))
+        self.ret.toggled.connect(self._ret_changed)
         lay.addWidget(self.sel_only)
         lay.addWidget(self.ret)
 
@@ -1094,9 +1094,19 @@ class JobPanel(QWidget):
         lay.addStretch(1)
         self._start_changed()
 
+    def _persist(self):
+        """Simpan perubahan titik awal/jangkar/kembali ke profil aktif (bukan saat memuat dari perangkat)."""
+        if not getattr(self, "_loading", False) and hasattr(self.win, "profiles"):
+            self.win.save_current_profile()
+
+    def _ret_changed(self, v):
+        self.win.project.device.end_return = "origin" if v else "none"
+        self._persist()
+
     def _start_changed(self, *_):
         dev = self.win.project.device
         dev.start_from = self.start.currentData()
+        self._persist()
         on = dev.start_from == "current"
         for b in self.anchor_grp.buttons():
             b.setEnabled(on)
@@ -1104,15 +1114,20 @@ class JobPanel(QWidget):
 
     def _anchor_changed(self, i):
         self.win.project.device.anchor = int(i)
+        self._persist()
 
     def reload_from_device(self):
         dev = self.win.project.device
-        self.start.setCurrentIndex(0 if dev.start_from == "absolute" else 1)
-        b = self.anchor_grp.button(dev.anchor)
-        if b:
-            b.setChecked(True)
-        self.ret.setChecked(dev.end_return == "origin")
-        self._start_changed()
+        self._loading = True
+        try:
+            self.start.setCurrentIndex(0 if dev.start_from == "absolute" else 1)
+            b = self.anchor_grp.button(dev.anchor)
+            if b:
+                b.setChecked(True)
+            self.ret.setChecked(dev.end_return == "origin")
+            self._start_changed()
+        finally:
+            self._loading = False
 
 
 # =============================================================================

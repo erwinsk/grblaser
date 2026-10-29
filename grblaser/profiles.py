@@ -47,6 +47,18 @@ class Profiles:
             return True
         return False
 
+    def rename(self, old, new):
+        """Ganti nama profil. Gagal bila nama baru kosong/sudah dipakai atau profil lama tidak ada."""
+        new = (new or "").strip()
+        d = self._load()
+        if not new or old not in d or (new in d and new != old):
+            return False
+        if new != old:
+            d = {(new if k == old else k): v for k, v in d.items()}      # urutan tetap
+            d[new]["name"] = new
+            self._store(d)
+        return True
+
     def ensure(self, dev):
         """Pastikan ada minimal satu profil (dari perangkat aktif) saat pertama kali dipakai."""
         if not self._load():

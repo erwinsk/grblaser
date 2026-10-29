@@ -2,6 +2,14 @@
 
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/); versi mengikuti [SemVer](https://semver.org/lang/id/).
 
+## [0.4.0] - 2026-10-29
+### Ditambahkan
+- **Pemeriksaan sebelum jalan** (`preflight.py`): kesalahan memblokir (kecepatan ≤ 0, daya di luar 0–100%), peringatan (objek di luar area kerja, daya 0%, isian terlalu rapat,
+  S maks / area kerja / `$32` berbeda dari mesin). `$$` dibaca otomatis sebelum mulai. Dialog mulai bernilai bawaan *Tidak* bila ada peringatan; ekspor G-code mencatatnya di konsol.
+- **Simpan otomatis & pemulihan** (`autosave.py`): salinan tiap 45 detik di thread latar ke `~/.local/share/grblaser/` bila ada perubahan; ditawarkan saat aplikasi dibuka lagi setelah crash. Dihapus saat simpan atau keluar normal.
+- **Mesin proyek**: bila proyek dibuat untuk mesin berbeda dari mesin aktif, aplikasi bertanya (pakai mesin proyek atau tetap mesin aktif); profil baru dibuat otomatis dari proyek.
+- **Profil**: perubahan titik awal, jangkar, dan "kembali ke asal" langsung tersimpan ke profil aktif; tombol *Ganti nama* di dialog Pengaturan perangkat.
+
 ## [0.3.0] - 2026-10-28
 ### Ditambahkan
 - Grup objek: `Ctrl+G` (grup), `Ctrl+Shift+G` / `Ctrl+U` (pisah); tersimpan di berkas proyek.
