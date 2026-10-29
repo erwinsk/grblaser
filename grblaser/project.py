@@ -27,15 +27,17 @@ def save_project(project, path):
         if isinstance(s, PathShape):
             shapes.append({
                 "type": "path", "layer": s.layer, "kind": s.kind, "name": s.name, "group": s.group,
+                "text": s.text_spec,
                 "polys": [{"closed": p.closed, "pts": np.round(p.pts, 4).ravel().tolist()} for p in s.polys],
             })
         elif isinstance(s, ImageShape):
             shapes.append({
                 "type": "image", "layer": s.layer, "name": s.name, "group": s.group,
-                "x": s.x, "y": s.y, "w": s.w, "h": s.h,
+                "x": s.x, "y": s.y, "w": s.w, "h": s.h, "angle": s.angle,
                 "opts": s.opts.to_dict(), "png": _png_b64(s.img),
             })
     data = {"version": VERSION, "device": project.device.to_dict(),
+            "mirror": [bool(project.mirror_x), bool(project.mirror_y)],
             "layers": [l.to_dict() for l in project.layers], "shapes": shapes}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f)
@@ -62,12 +64,17 @@ def load_project(path):
         if d.get("type") == "path":
             polys = [Poly(np.array(p["pts"], dtype=float).reshape(-1, 2), p["closed"]) for p in d["polys"]]
             pr.shapes.append(PathShape(polys, d.get("layer", 0), d.get("kind", "path"), d.get("name", "")))
+            if d.get("text"):
+                pr.shapes[-1].text_spec = d["text"]
             _set_group(pr.shapes[-1], d, gmap)
         elif d.get("type") == "image":
             img = Image.open(io.BytesIO(base64.b64decode(d["png"]))).convert("L")
             pr.shapes.append(ImageShape(img, d["x"], d["y"], d["w"], d["h"],
                                         ImageOptions.from_dict(d.get("opts", {})),
                                         d.get("layer", 0), d.get("name", "")))
+            pr.shapes[-1].angle = float(d.get("angle", 0.0))
             _set_group(pr.shapes[-1], d, gmap)
+    m = data.get("mirror") or [False, False]
+    pr.mirror_x, pr.mirror_y = bool(m[0]), bool(m[1])
     pr.path = path
     return pr

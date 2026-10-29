@@ -23,8 +23,9 @@ from ..toolpath import build_job
 from .canvas import Canvas
 from .. import preflight
 from ..autosave import Autosave
+from ..materials import Materials
 from ..profiles import Profiles
-from .dialogs import ArrayDialog, DeviceDialog, OffsetDialog, TextDialog
+from .dialogs import ArrayDialog, DeviceDialog, MaterialsDialog, OffsetDialog, TextDialog, text_polys
 from .panels import (ConsolePanel, ImagePanel, JobPanel, LaserPanel, LayerPanel, PosSizeBar,
                      PropertiesPanel)
 from .tasks import TaskRunner
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         self._load_device_pref()
         self.profiles = Profiles(self.settings)
         self.profiles.ensure(self.project.device)
+        self.materials = Materials(self.settings)
         self.sender = GrblSender(self)
         self.active_layer = 0
         self.undo_stack, self.redo_stack = [], []
@@ -106,6 +108,7 @@ class MainWindow(QMainWindow):
         c.textRequested.connect(self._text_requested)
         c.filesDropped.connect(self.import_files)
         c.contextRequested.connect(self._context_menu)
+        c.doubleClicked.connect(self._canvas_double_click)
         c.cursorMoved.connect(self._cursor_moved)
         c.toolReset.connect(lambda: self.act_tools["select"].setChecked(True))
         c.deleteRequested.connect(self.delete_selection)
@@ -197,6 +200,7 @@ class MainWindow(QMainWindow):
         self.a_all = A("Pilih semua", self.select_all, "Ctrl+A")
         self.a_group = A("Grup", self.group_selection, "Ctrl+G", "Gabungkan objek terpilih menjadi satu grup (Ctrl+G)")
         self.a_ungroup = A("Pisahkan grup", self.ungroup_selection, "Ctrl+Shift+G", "Pecah grup terpilih (Ctrl+Shift+G / Ctrl+U)")
+        self.a_edittext = A("Edit teks…", self.edit_text, "Ctrl+Return", "Ubah isi/font/ukuran teks terpilih (juga: klik ganda pada teks)")
         self.a_ungroup.setShortcuts([QKeySequence("Ctrl+Shift+G"), QKeySequence("Ctrl+U")])
         self.a_rotcw = A("Putar 90° ↻", lambda: self.rotate_selection(90))
         self.a_rotccw = A("Putar 90° ↺", lambda: self.rotate_selection(-90))
@@ -242,7 +246,7 @@ class MainWindow(QMainWindow):
         for a in (self.a_undo, self.a_redo, None, self.a_copy, self.a_paste, self.a_dup, self.a_del, self.a_all):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("&Susun")
-        for a in (self.a_group, self.a_ungroup, None,
+        for a in (self.a_group, self.a_ungroup, self.a_edittext, None,
                   self.a_rotcw, self.a_rotccw, self.a_fliph, self.a_flipv, None, self.a_center, self.a_corner,
                   None, self.a_array):
             m.addSeparator() if a is None else m.addAction(a)
@@ -360,7 +364,8 @@ class MainWindow(QMainWindow):
 
     def _update_title(self):
         name = os.path.basename(self.project.path) if self.project.path else "Tanpa judul"
-        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} — Grblaser")
+        mir = "".join(t for t, on in ((" [CERMIN X]", self.project.mirror_x), (" [CERMIN Y]", self.project.mirror_y)) if on)
+        self.setWindowTitle(f"{'*' if self.dirty else ''}{name}{mir} — Grblaser")
 
     def _mark(self):
         self.rev += 1
@@ -559,6 +564,48 @@ class MainWindow(QMainWindow):
     def copy_selection(self):
         self.clipboard = [s.clone() for s in self.canvas.selected_shapes()]
         self.note(f"{len(self.clipboard)} objek disalin")
+
+    def materials_dialog(self):
+        layer = self.project.layer(self.active_layer)
+        snap = self.project.snapshot()                      # untuk undo bila preset diterapkan
+        dlg = MaterialsDialog(self.materials, self.project.device.name, layer, self)
+        if dlg.exec_() == dlg.Accepted and dlg.applied:
+            self.undo_stack.append(snap)
+            self.redo_stack.clear()
+            self._mark()
+            self.layer_panel.refresh()
+            self.invalidate_preview()
+            self.note(f"Preset diterapkan ke layer \"{layer.name}\"", 4000)
+
+    def _single_text(self):
+        sel = self.canvas.selected_shapes()
+        if len(sel) == 1 and isinstance(sel[0], PathShape) and sel[0].text_spec:
+            return sel[0]
+        return None
+
+    def edit_text(self):
+        sh = self._single_text()
+        if sh is None:
+            self.note("Pilih satu objek teks (dibuat dengan alat Teks) untuk diedit.", 4000)
+            return False
+        dlg = TextDialog(self, sh.text_spec["params"])
+        if dlg.exec_() != dlg.Accepted:
+            return False
+        prm = dlg.params()
+        polys = text_polys(prm)
+        if not polys:
+            self.note("Teks kosong / font tidak menghasilkan kontur", 4000)
+            return False
+        self.push_undo()
+        sh.set_text_polys(polys, prm)
+        self.geometry_edited()
+        return True
+
+    def _canvas_double_click(self, x, y):
+        hit = self.canvas.hit_test(x, y)
+        if hit is not None and isinstance(hit, PathShape) and hit.text_spec:
+            self.canvas.set_selection({hit.id})
+            self.edit_text()
 
     def group_selection(self):
         sel = self.canvas.selected_shapes()
@@ -857,10 +904,14 @@ class MainWindow(QMainWindow):
         imgs = [s for s in self.canvas.selected_shapes() if isinstance(s, ImageShape)]
         if not imgs:
             return
-        data = [(s.id, s.img, s.x, s.y, s.w, s.h, model.ImageOptions.from_dict(s.opts.to_dict()), s.name) for s in imgs]
+        data = [(s.id, s.clone(), model.ImageOptions.from_dict(s.opts.to_dict()), s.name) for s in imgs]
 
         def work():
-            return [(sid, name, raster.trace_polys(img, x, y, w, h, o)) for sid, img, x, y, w, h, o, name in data]
+            out = []
+            for sid, sh, o, name in data:
+                img, _mask, x, y, w, h = sh.rotated(o.lpmm)      # mendukung gambar yang diputar bebas
+                out.append((sid, name, raster.trace_polys(img, x, y, w, h, o)))
+            return out
 
         def done(results):
             self.push_undo()
@@ -888,6 +939,8 @@ class MainWindow(QMainWindow):
             m.addSeparator()
             m.addAction(self.a_group)
             m.addAction(self.a_ungroup)
+            if self._single_text() is not None:
+                m.addAction(self.a_edittext)
             m.addSeparator()
             sub = m.addMenu("Pindahkan ke layer")
             for L in self.project.layers:
@@ -897,22 +950,49 @@ class MainWindow(QMainWindow):
             for a in (self.a_rotcw, self.a_rotccw, self.a_fliph, self.a_flipv, self.a_center):
                 m.addAction(a)
         m.addSeparator()
-        mv = m.addAction("Pindahkan laser ke sini")
-        mv.setEnabled(self.sender.connected and not self.sender._running)
+        ux, uy = self.project.device.to_user(x, y)
+        ready = self.sender.connected and not self.sender._running
+        mv = m.addAction(f"Pindahkan laser ke sini (X {ux:.1f}, Y {uy:.1f})")
+        mv.setEnabled(ready)
         mv.triggered.connect(lambda: self._move_laser_to(x, y))
+        st = m.addAction("Pindahkan laser ke sini & jadikan titik awal pekerjaan")
+        st.setToolTip("Laser berjalan ke titik ini lalu mode 'posisi saat ini' diaktifkan: jangkar desain ditaruh di titik ini.")
+        st.setEnabled(ready)
+        st.triggered.connect(lambda: self._move_laser_to(x, y, make_start=True))
+        z = m.addAction("Set nol mesin di posisi laser sekarang…")
+        z.setToolTip("G10 L20 P1 X0 Y0: menjadikan posisi laser saat ini koordinat 0,0 (menggeser koordinat kerja).")
+        z.setEnabled(ready)
+        z.triggered.connect(self._zero_here)
         m.exec_(gpos)
 
-    def _move_laser_to(self, x, y):
+    def _move_laser_to(self, x, y, make_start=False):
+        """Jog laser ke titik desain (x, y) pada koordinat kerja yang sama dengan penggaris. Berlaku di semua mode awal."""
         dev = self.project.device
-        if dev.start_from != "absolute":
-            self.note("Pindah ke titik hanya pada mode koordinat absolut.")
-            return
-        T = make_transform(dev, None, "absolute")
-        X, Y = T(x, y)
+        if not self.sender.connected or self.sender._running:
+            self.note("Hubungkan laser dan pastikan tidak ada pekerjaan berjalan.", 5000)
+            return False
+        X, Y = dev.to_user(x, y)
         if not (-0.001 <= X <= dev.bed_w and -0.001 <= Y <= dev.bed_h):
-            self.note("Titik di luar area kerja")
-            return
-        self.sender.send_line(f"G90 G0 X{X:.3f} Y{Y:.3f}")
+            self.note("Titik di luar area kerja", 4000)
+            return False
+        feed = self.laser_panel.feed.value() if hasattr(self.laser_panel, "feed") else dev.rapid_rate
+        if not self.sender.jog_to(X, Y, feed):
+            return False
+        self.note(f"Laser menuju X {X:.2f}, Y {Y:.2f}", 4000)
+        if make_start:
+            dev.start_from = "current"
+            self.job.reload_from_device()
+            self.save_current_profile()
+            self.note(f"Laser menuju X {X:.2f}, Y {Y:.2f}. Mode 'posisi saat ini' aktif: titik awal pekerjaan di sini.", 8000)
+        return True
+
+    def _zero_here(self):
+        if QMessageBox.question(self, "Set nol mesin",
+                                "Jadikan posisi laser SAAT INI sebagai koordinat 0,0 (G10 L20 P1 X0 Y0)?\n\n"
+                                "Koordinat kerja bergeser: penggaris di aplikasi mengasumsikan 0,0 = asal mesin hasil homing. "
+                                "Lanjutkan hanya bila Anda memang memakai titik nol buatan.",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+            self.sender.zero_here()
 
     # ------------------------------------------------------------------ impor
     def import_dialog(self):
@@ -1200,6 +1280,7 @@ class MainWindow(QMainWindow):
         key = (self.rev, tuple(sorted(only)) if only else None)
         cached = self._job_cache[1] if (self._job_cache and self._job_cache[0] == key) else None
         project, version = self.project, __version__
+        mirror = (project.mirror_x, project.mirror_y)
 
         def work():
             job = cached if cached is not None else build_job(project, only)
@@ -1207,14 +1288,22 @@ class MainWindow(QMainWindow):
             if job.empty():
                 return out
             if need_t or gcode:
-                T = make_transform(dev, job.bounds, current=cur)
+                T = make_transform(dev, job.bounds, current=cur, mirror=mirror)
                 out["T"] = T
                 if gcode:
                     lines = emit_gcode(job, dev, T, comments=comments, title="Grblaser " + version)
                     # pembersihan jutaan baris dilakukan di thread latar, bukan di thread UI
                     out["lines"] = lines if comments else clean_gcode(lines)
             if preview:
-                out["img"], _ = render_segments(ops_to_segments(job.ops), dev.bed_w, dev.bed_h, dev.s_max)
+                segs = ops_to_segments(job.ops)
+                if (mirror[0] or mirror[1]) and len(segs):          # pratinjau mengikuti cermin
+                    segs = segs.copy()
+                    b = job.bounds
+                    if mirror[0]:
+                        segs[:, [0, 2]] = (b[0] + b[2]) - segs[:, [0, 2]]
+                    if mirror[1]:
+                        segs[:, [1, 3]] = (b[1] + b[3]) - segs[:, [1, 3]]
+                out["img"], _ = render_segments(segs, dev.bed_w, dev.bed_h, dev.s_max)
             return out
 
         def done(res):
@@ -1262,9 +1351,26 @@ class MainWindow(QMainWindow):
 
         self._run_job("Membuat G-code…", ready, gcode=True, comments=True)
 
+    def set_mirror(self, mx, my):
+        if (mx, my) == (self.project.mirror_x, self.project.mirror_y):
+            return
+        self.project.mirror_x, self.project.mirror_y = bool(mx), bool(my)
+        self._mark()
+        self.invalidate_preview()
+        self._update_title()
+
     def frame_job(self):
         if not self._need_ready():
             return
+        dev = self.project.device
+        if dev.frame_laser and dev.frame_power > 0:
+            ok = QMessageBox.question(
+                self, "Bingkai dengan laser menyala",
+                f"Laser akan MENYALA {dev.frame_power:g}% selama bingkai (penunjuk posisi).\n"
+                "Daya rendah tetap bisa menghitamkan/membakar bahan peka. Pakai kacamata pelindung dan pastikan bahan sesuai.\n\n"
+                "Lanjutkan?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ok != QMessageBox.Yes:
+                return
 
         def ready(res):
             job = res["job"]

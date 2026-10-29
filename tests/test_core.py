@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from grblaser import gcode, importers, raster, toolpath
-from grblaser.model import (LAYER_COLORS, ImageOptions, ImageShape, Layer, PathShape, Poly,
+from grblaser.model import (Device, LAYER_COLORS, ImageOptions, ImageShape, Layer, PathShape, Poly,
                             Project as _Project, ellipse_poly, rect_poly)
 from grblaser.project import load_project, save_project
 from grblaser.tracing import rdp, trace_mask
@@ -280,7 +280,99 @@ class TestProject(unittest.TestCase):
         self.assertTrue(im.rotate(90, 10, 5))
         self.assertAlmostEqual(im.w, 10)
         self.assertAlmostEqual(im.h, 20)
-        self.assertFalse(im.rotate(33, 0, 0))
+        # rotasi bebas kini diperbolehkan: sudut disimpan, bbox membesar
+        self.assertTrue(im.rotate(33, 0, 0))
+        self.assertAlmostEqual(im.angle, 33.0)
+        b = im.bbox()
+        self.assertGreater(b[2] - b[0], 10)
+
+    def test_image_free_rotation(self):
+        im = ImageShape(Image.new("L", (40, 20), 0), 10, 10, 40, 20)
+        cx, cy = im.center()
+        im.rotate(45, cx, cy)
+        self.assertAlmostEqual(im.angle, 45.0)
+        self.assertEqual(im.center(), (cx, cy))                 # berputar di pusatnya
+        bb = im.bbox()
+        self.assertAlmostEqual(bb[2] - bb[0], (40 + 20) / math.sqrt(2), 6)
+        # akumulasi hingga kelipatan 90 -> dinormalkan menjadi putar piksel
+        im.rotate(45, cx, cy)
+        self.assertAlmostEqual(im.angle, 0.0)
+        self.assertAlmostEqual(im.w, 20)
+        self.assertAlmostEqual(im.h, 40)
+        self.assertAlmostEqual(im.center()[0], cx)
+        # set_angle absolut, kloning, simpan/muat
+        im.set_angle(-30)
+        self.assertAlmostEqual(im.angle, 330.0)
+        c = im.clone()
+        self.assertAlmostEqual(c.angle, 330.0)
+        import tempfile, os
+        from grblaser.project import save_project, load_project
+        pr = Project()
+        pr.add(im)
+        path = os.path.join(tempfile.mkdtemp(), "r.glz")
+        save_project(pr, path)
+        self.assertAlmostEqual(load_project(path).shapes[0].angle, 330.0)
+        # skala proporsional dan cermin pada gambar yang diputar
+        im.scale(2, 2, *im.center())
+        self.assertAlmostEqual(im.w, 40)
+        im.flip(True, *im.center())
+        self.assertAlmostEqual(im.angle, 30.0)
+        # crop ditolak saat diputar
+        self.assertFalse(im.crop(0.1, 0.1, 0.1, 0.1))
+
+    def test_rotated_image_job_stays_inside_bbox_and_ignores_corners(self):
+        arr = np.zeros((60, 100), np.uint8)             # gambar hitam penuh
+        im = ImageShape(Image.fromarray(arr, "L"), 20, 20, 50, 30)
+        im.opts.method = "threshold"
+        im.opts.lpmm = 5.0
+        im.opts.invert = True                          # negatif: sudut kosong tidak boleh terbakar
+        pr = Project()
+        pr.layers[1].mode = "image"
+        im.layer = pr.layers[1].index
+        pr.add(im)
+        im.rotate(30, *im.center())
+        job = toolpath.build_job(pr)
+        bb = im.bbox()
+        self.assertGreaterEqual(job.bounds[0], bb[0] - 0.6)
+        self.assertLessEqual(job.bounds[2], bb[2] + 0.6)
+        # bila negatif dimatikan, seluruh persegi miring terbakar: area terbakar ~ w*h, bukan seluas bbox
+        im.opts.invert = False
+        job = toolpath.build_job(pr)
+        segs = gcode.parse_gcode(gcode.emit_gcode(job, pr.device, gcode.make_transform(pr.device, job.bounds)))
+        self.assertGreater(len(segs), 0)
+
+    def test_mirror_transform(self):
+        dev = Device()
+        b = (10, 10, 60, 40)
+        T = gcode.make_transform(dev, b, mirror=(True, False))
+        self.assertEqual(T(10, 10), T0(dev, b)(60, 10))
+        self.assertEqual(T(60, 40), T0(dev, b)(10, 40))
+        T = gcode.make_transform(dev, b, mirror=(False, True))
+        self.assertEqual(T(10, 10), T0(dev, b)(10, 40))
+        T = gcode.make_transform(dev, b, mirror=(True, True))
+        self.assertEqual(T(10, 10), T0(dev, b)(60, 40))
+        # mode posisi saat ini: kotak pekerjaan tetap berjangkar di titik laser
+        T = gcode.make_transform(dev, b, "current", 0, (100.0, 200.0), mirror=(True, False))
+        self.assertEqual(T(60, 10), (100.0, 200.0))
+
+    def test_frame_laser_option_and_migration(self):
+        dev = Device()
+        b = (10, 10, 60, 40)
+        T = gcode.make_transform(dev, b)
+        off = gcode.frame_lines(dev, T, b)
+        self.assertFalse(any(l.startswith(("M4", "M3", "M5")) for l in off))
+        dev.frame_power = 2.0                                  # daya ada tapi opsi mati -> tetap mati
+        self.assertFalse(any(l.startswith(("M4", "M3")) for l in gcode.frame_lines(dev, T, b)))
+        dev.frame_laser = True
+        on = gcode.frame_lines(dev, T, b)
+        self.assertIn("M4 S20", on)
+        self.assertEqual(on[-1], "M5")
+        self.assertTrue(Device.from_dict({"frame_power": 3.0}).frame_laser)      # profil lama
+        self.assertFalse(Device.from_dict({"frame_power": 3.0, "frame_laser": False}).frame_laser)
+
+
+def T0(dev, b):
+    return gcode.make_transform(dev, b)
 
 
 if __name__ == "__main__":

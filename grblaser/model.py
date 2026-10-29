@@ -76,7 +76,8 @@ class Device:
     anchor: int = 0              # 0..8 baris-demi-baris (0=kiri-atas, 4=tengah, 8=kanan-bawah)
     end_return: str = "none"     # none | origin
     frame_speed: float = 3000.0
-    frame_power: float = 0.0     # % ; 0 = laser mati saat bingkai
+    frame_power: float = 0.0     # % daya saat bingkai (dipakai bila frame_laser aktif)
+    frame_laser: bool = False    # laser menyala redup saat bingkai (hanya untuk melihat posisi)
     air_on: str = "M8"
     air_off: str = "M9"
     baud: int = 115200
@@ -107,7 +108,10 @@ class Device:
     @staticmethod
     def from_dict(d):
         names = {f.name for f in fields(Device)}
-        return Device(**{k: v for k, v in d.items() if k in names})
+        dev = Device(**{k: v for k, v in d.items() if k in names})
+        if "frame_laser" not in d and dev.frame_power > 0:      # berkas/profil lama: daya > 0 berarti laser menyala
+            dev.frame_laser = True
+        return dev
 
 
 @dataclass
@@ -183,6 +187,9 @@ class PathShape(Shape):
         super().__init__(layer, name)
         self.polys = [p for p in polys if len(p.pts) >= 2]
         self.kind = kind
+        # Teks yang masih bisa diedit: {"params": {...}, "m": [a,b,c,d,e,f]}; m = transformasi dari kontur hasil
+        # pembuatan (pojok kiri-atas di 0,0) ke posisi sekarang, diperbarui oleh setiap translate/skala/putar.
+        self.text_spec = None
 
     def bbox(self):
         allp = np.vstack([p.pts for p in self.polys])
@@ -190,6 +197,10 @@ class PathShape(Shape):
                 float(allp[:, 0].max()), float(allp[:, 1].max()))
 
     def apply(self, a, b, c, d, e, f):
+        if self.text_spec is not None:
+            a1, b1, c1, d1, e1, f1 = self.text_spec["m"]
+            self.text_spec["m"] = [a * a1 + c * b1, b * a1 + d * b1, a * c1 + c * d1, b * c1 + d * d1,
+                                   a * e1 + c * f1 + e, b * e1 + d * f1 + f]
         for p in self.polys:
             x = p.pts[:, 0]
             y = p.pts[:, 1]
@@ -218,13 +229,29 @@ class PathShape(Shape):
         c = PathShape([p.copy() for p in self.polys], self.layer, self.kind, self.name)
         c.id = self.id
         c.group = self.group
+        c.text_spec = copy.deepcopy(self.text_spec)
         return c
+
+    def set_text_polys(self, polys, params):
+        """Ganti isi teks (kontur baru dibuat di titik asal), pertahankan transformasi pengguna."""
+        a, b, c, d, e, f = self.text_spec["m"]
+        new = []
+        for p in polys:
+            q = p.copy()
+            x, y = q.pts[:, 0], q.pts[:, 1]
+            q.pts = np.column_stack((a * x + c * y + e, b * x + d * y + f))
+            new.append(q)
+        self.polys = new
+        self.text_spec["params"] = dict(params)
+        self.name = (params.get("text", "").split("\n")[0])[:24] or self.name
 
     def point_count(self):
         return int(sum(len(p.pts) for p in self.polys))
 
 
 class ImageShape(Shape):
+    """Gambar raster. (x, y, w, h) = persegi *sebelum* rotasi; `angle` (derajat, searah jarum jam) memutarnya
+    mengelilingi pusat persegi itu. Tanpa rotasi bebas (angle == 0) rotasi 90° dilakukan lossless pada piksel."""
     type = "image"
 
     def __init__(self, img, x, y, w, h, opts=None, layer=0, name=""):
@@ -232,15 +259,47 @@ class ImageShape(Shape):
         self.img = img.convert("L")
         self.x, self.y, self.w, self.h = float(x), float(y), float(w), float(h)
         self.opts = opts or ImageOptions()
+        self.angle = 0.0
+
+    def center(self):
+        return self.x + self.w / 2.0, self.y + self.h / 2.0
+
+    def corners(self):
+        """Empat sudut (ruang desain) setelah rotasi, berurutan kiri-atas, kanan-atas, kanan-bawah, kiri-bawah."""
+        cx, cy = self.center()
+        th = math.radians(self.angle)
+        c, s = math.cos(th), math.sin(th)
+        hw, hh = self.w / 2.0, self.h / 2.0
+        return [(cx + dx * c - dy * s, cy + dx * s + dy * c)
+                for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))]
 
     def bbox(self):
-        return (self.x, self.y, self.x + self.w, self.y + self.h)
+        if abs(self.angle) < 1e-9:
+            return (self.x, self.y, self.x + self.w, self.y + self.h)
+        pts = self.corners()
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        return (min(xs), min(ys), max(xs), max(ys))
 
     def translate(self, dx, dy):
         self.x += dx
         self.y += dy
 
     def scale(self, sx, sy, cx, cy):
+        if abs(self.angle) > 1e-9:
+            # gambar yang diputar hanya bisa diskalakan proporsional (persegi miring tetap persegi)
+            k = math.sqrt(abs(sx * sy)) or 1e-9
+            ccx, ccy = self.center()
+            nx, ny = cx + (ccx - cx) * sx, cy + (ccy - cy) * sy
+            self.w *= k
+            self.h *= k
+            self.x, self.y = nx - self.w / 2, ny - self.h / 2
+            if sx < 0:
+                self.img = ImageOps.mirror(self.img)
+                self.angle = -self.angle % 360.0
+            if sy < 0:
+                self.img = ImageOps.flip(self.img)
+                self.angle = -self.angle % 360.0
+            return
         x0 = cx + (self.x - cx) * sx
         x1 = cx + (self.x + self.w - cx) * sx
         y0 = cy + (self.y - cy) * sy
@@ -253,20 +312,31 @@ class ImageShape(Shape):
         self.w, self.h = abs(x1 - x0), abs(y1 - y0)
 
     def rotate(self, deg, cx, cy):
-        q = (deg / 90.0)
-        if abs(q - round(q)) > 1e-6:
-            return False  # gambar hanya bisa diputar kelipatan 90 derajat
-        k = int(round(q)) % 4
-        if k == 0:
-            return True
-        mx, my = self.x + self.w / 2 - cx, self.y + self.h / 2 - cy
-        for _ in range(k):  # 90 derajat searah jarum jam
-            mx, my = -my, mx
-        self.img = self.img.rotate(-90 * k, expand=True)
-        if k % 2 == 1:
-            self.w, self.h = self.h, self.w
-        self.x, self.y = cx + mx - self.w / 2, cy + my - self.h / 2
+        """Putar searah jarum jam `deg` derajat mengelilingi (cx, cy). Sudut bebas diperbolehkan."""
+        ccx, ccy = self.center()
+        th = math.radians(deg)
+        mx, my = ccx - cx, ccy - cy
+        nx = cx + mx * math.cos(th) - my * math.sin(th)
+        ny = cy + mx * math.sin(th) + my * math.cos(th)
+        ang = (self.angle + deg) % 360.0
+        q = ang / 90.0
+        if abs(q - round(q)) * 90.0 < 1e-6:          # kelipatan 90°: putar piksel (tanpa interpolasi)
+            k = int(round(q)) % 4
+            if k:
+                self.img = self.img.rotate(-90 * k, expand=True)
+                if k % 2 == 1:
+                    self.w, self.h = self.h, self.w
+            self.angle = 0.0
+        else:
+            self.angle = ang
+        self.x, self.y = nx - self.w / 2, ny - self.h / 2
         return True
+
+    def set_angle(self, deg):
+        """Atur sudut absolut (−180..180) mengelilingi pusat gambar."""
+        cur = self.angle if self.angle <= 180 else self.angle - 360
+        cx, cy = self.center()
+        self.rotate(deg - cur, cx, cy)
 
     def flip(self, horizontal, cx, cy):
         if horizontal:
@@ -275,7 +345,9 @@ class ImageShape(Shape):
             self.scale(1, -1, cx, cy)
 
     def crop(self, l, t, r, b):
-        """Potong gambar (pecahan 0..1 dari tiap sisi); isi gambar tetap di tempatnya."""
+        """Potong gambar (pecahan 0..1 dari tiap sisi); isi gambar tetap di tempatnya. Tidak untuk gambar yang diputar."""
+        if abs(self.angle) > 1e-9:
+            return False
         W, H = self.img.size
         x0, y0 = int(round(W * l)), int(round(H * t))
         x1, y1 = W - int(round(W * r)), H - int(round(H * b))
@@ -289,11 +361,29 @@ class ImageShape(Shape):
         self.img = self.img.crop((x0, y0, x1, y1))
         return True
 
+    def rotated(self, lpmm=10.0, max_side_px=3200):
+        """(img, mask, x, y, w, h) untuk pengolahan raster/trace.
+
+        Tanpa rotasi bebas: gambar asli. Dengan rotasi: gambar dirotasi pada resolusi kerja (cukup untuk `lpmm`
+        garis/mm) dengan latar putih; `mask` (L) menandai piksel yang berasal dari gambar (255) vs sudut kosong (0)."""
+        if abs(self.angle) < 1e-9:
+            return self.img, None, self.x, self.y, self.w, self.h
+        src_k = max(self.img.width / self.w, self.img.height / self.h)
+        k = min(src_k, 2.0 * max(lpmm, 1.0), max_side_px / max(self.w, self.h))
+        W, H = max(2, int(round(self.w * k))), max(2, int(round(self.h * k)))
+        base = self.img.resize((W, H), Image.LANCZOS)
+        rot = base.rotate(-self.angle, expand=True, resample=Image.BICUBIC, fillcolor=255)
+        mask = Image.new("L", (W, H), 255).rotate(-self.angle, expand=True, resample=Image.BILINEAR, fillcolor=0)
+        w2, h2 = rot.width / k, rot.height / k
+        cx, cy = self.center()
+        return rot, mask, cx - w2 / 2.0, cy - h2 / 2.0, w2, h2
+
     def clone(self):
         c = ImageShape(self.img, self.x, self.y, self.w, self.h,
                        ImageOptions.from_dict(self.opts.to_dict()), self.layer, self.name)
         c.id = self.id
         c.group = self.group
+        c.angle = self.angle
         return c
 
 
@@ -313,6 +403,8 @@ class Project:
         self.layers = default_layers()
         self.shapes = []
         self.path = None
+        self.mirror_x = False       # cermin pekerjaan (horizontal / vertikal) saat membuat G-code
+        self.mirror_y = False
 
     # -- layer ------------------------------------------------------------
     def layer(self, index):

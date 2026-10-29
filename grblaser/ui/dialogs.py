@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QFontDatabase, QPainterPath
 from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QFontComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QInputDialog, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout)
+                             QFileDialog, QInputDialog, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout)
 
 from ..model import Device, Poly, PathShape
 
@@ -49,7 +49,9 @@ class DeviceDialog(QDialog):
         self.rapid = _dspin(100, 100000, dev.rapid_rate, 0, " mm/mnt")
         self.fspeed = _dspin(100, 100000, dev.frame_speed, 0, " mm/mnt")
         self.fpower = _dspin(0, 100, dev.frame_power, 1, " %")
-        self.fpower.setToolTip("0 = laser mati saat membingkai. Beberapa persen (mis. 1-2%) membuat garis tipis terlihat.")
+        self.fpower.setToolTip("Daya laser saat membingkai bila 'Laser menyala saat bingkai' dicentang. Beberapa persen (mis. 1-2%) cukup.")
+        self.flaser = QCheckBox("Laser menyala saat bingkai (penunjuk posisi)")
+        self.flaser.setChecked(dev.frame_laser)
         self.air_on = QLineEdit(dev.air_on)
         self.air_off = QLineEdit(dev.air_off)
         self.baud = QComboBox()
@@ -64,6 +66,7 @@ class DeviceDialog(QDialog):
         f.addRow("Asal mesin (0,0)", self.origin)
         f.addRow("Kecepatan gerak cepat (estimasi)", self.rapid)
         f.addRow("Kecepatan bingkai", self.fspeed)
+        f.addRow(self.flaser)
         f.addRow("Daya bingkai", self.fpower)
         f.addRow("Air assist hidup", self.air_on)
         f.addRow("Air assist mati", self.air_off)
@@ -113,6 +116,7 @@ class DeviceDialog(QDialog):
         self.rapid.setValue(d.rapid_rate)
         self.fspeed.setValue(d.frame_speed)
         self.fpower.setValue(d.frame_power)
+        self.flaser.setChecked(d.frame_laser)
         self.air_on.setText(d.air_on)
         self.air_off.setText(d.air_off)
         self.baud.setCurrentText(str(d.baud))
@@ -188,6 +192,7 @@ class DeviceDialog(QDialog):
         dev.rapid_rate = self.rapid.value()
         dev.frame_speed = self.fspeed.value()
         dev.frame_power = self.fpower.value()
+        dev.frame_laser = self.flaser.isChecked()
         dev.air_on = self.air_on.text() or "M8"
         dev.air_off = self.air_off.text() or "M9"
         dev.baud = int(self.baud.currentData())
@@ -195,20 +200,58 @@ class DeviceDialog(QDialog):
             setattr(dev, k, v)
 
 
-class TextDialog(QDialog):
-    """Buat teks sebagai path (kontur huruf) - siap dipotong atau diisi."""
+def text_polys(params):
+    """Kontur teks dari `params` (text, font, size, bold, italic, spacing); pojok kiri-atas kotak pembatas di (0,0)."""
+    em = 200.0
+    font = QFont(params.get("font") or QFont().family())
+    font.setPixelSize(int(em))
+    font.setBold(bool(params.get("bold")))
+    font.setItalic(bool(params.get("italic")))
+    font.setLetterSpacing(QFont.PercentageSpacing, float(params.get("spacing", 100)))
+    from PyQt5.QtGui import QFontMetricsF
+    fm = QFontMetricsF(font)
+    path = QPainterPath()
+    for i, line in enumerate(str(params.get("text", "")).split("\n")):
+        if line:
+            path.addText(0, i * fm.lineSpacing(), font, line)
+    k = float(params.get("size", 12)) / em
+    polys = []
+    for sub in path.toSubpathPolygons():
+        pts = np.array([(p.x(), p.y()) for p in sub], dtype=float)
+        if len(pts) < 2:
+            continue
+        closed = len(pts) > 2 and np.allclose(pts[0], pts[-1])
+        if closed:
+            pts = pts[:-1]
+        polys.append(Poly(pts * k, closed))
+    if not polys:
+        return []
+    allp = np.vstack([p.pts for p in polys])
+    mn = allp.min(axis=0)
+    for p in polys:
+        p.pts = p.pts - mn
+    return polys
 
-    def __init__(self, parent=None):
+
+class TextDialog(QDialog):
+    """Buat / edit teks sebagai path (kontur huruf) - siap dipotong atau diisi."""
+
+    def __init__(self, parent=None, params=None):
         super().__init__(parent)
-        self.setWindowTitle("Teks")
-        self.edit = QPlainTextEdit("Teks")
+        self.setWindowTitle("Edit teks" if params else "Teks")
+        params = params or {}
+        self.edit = QPlainTextEdit(params.get("text", "Teks"))
         self.edit.setMinimumHeight(70)
         self.font = QFontComboBox()
-        self.size = _dspin(1, 1000, 12, 1, " mm")
+        if params.get("font"):
+            self.font.setCurrentFont(QFont(params["font"]))
+        self.size = _dspin(1, 1000, float(params.get("size", 12)), 1, " mm")
         self.size.setToolTip("Ukuran em huruf (tinggi huruf besar kira-kira 70%).")
         self.bold = QCheckBox("Tebal")
+        self.bold.setChecked(bool(params.get("bold")))
         self.italic = QCheckBox("Miring")
-        self.spacing = _dspin(0, 200, 100, 0, " %")
+        self.italic.setChecked(bool(params.get("italic")))
+        self.spacing = _dspin(0, 200, float(params.get("spacing", 100)), 0, " %")
         f = QFormLayout()
         f.addRow("Isi", self.edit)
         f.addRow("Font", self.font)
@@ -225,34 +268,18 @@ class TextDialog(QDialog):
         lay.addLayout(f)
         lay.addWidget(bb)
 
+    def params(self):
+        return {"text": self.edit.toPlainText(), "font": self.font.currentFont().family(), "size": self.size.value(),
+                "bold": self.bold.isChecked(), "italic": self.italic.isChecked(), "spacing": self.spacing.value()}
+
     def make_shape(self, x, y):
-        em = 200.0
-        font = QFont(self.font.currentFont())
-        font.setPixelSize(int(em))
-        font.setBold(self.bold.isChecked())
-        font.setItalic(self.italic.isChecked())
-        font.setLetterSpacing(QFont.PercentageSpacing, self.spacing.value())
-        from PyQt5.QtGui import QFontMetricsF
-        fm = QFontMetricsF(font)
-        path = QPainterPath()
-        for i, line in enumerate(self.edit.toPlainText().split("\n")):
-            if line:
-                path.addText(0, i * fm.lineSpacing(), font, line)
-        k = self.size.value() / em
-        polys = []
-        for sub in path.toSubpathPolygons():
-            pts = np.array([(p.x(), p.y()) for p in sub], dtype=float)
-            if len(pts) < 2:
-                continue
-            closed = len(pts) > 2 and np.allclose(pts[0], pts[-1])
-            if closed:
-                pts = pts[:-1]
-            polys.append(Poly(pts * k, closed))
+        prm = self.params()
+        polys = text_polys(prm)
         if not polys:
             return None
-        sh = PathShape(polys, kind="text", name=self.edit.toPlainText().split("\n")[0][:24])
-        bb = sh.bbox()
-        sh.translate(x - bb[0], y - bb[1])
+        sh = PathShape(polys, kind="text", name=prm["text"].split("\n")[0][:24])
+        sh.text_spec = {"params": prm, "m": [1, 0, 0, 1, 0, 0]}
+        sh.translate(x, y)
         return sh
 
 
@@ -302,6 +329,129 @@ class ArrayDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(self.tabs)
         lay.addWidget(bb)
+
+
+class MaterialsDialog(QDialog):
+    """Pustaka bahan untuk mesin aktif: terapkan ke layer aktif, simpan dari layer aktif, hapus, ekspor/impor."""
+
+    def __init__(self, materials, machine, layer, parent=None):
+        super().__init__(parent)
+        from .. import materials as mat
+        self.mat = mat
+        self.materials, self.machine, self.layer = materials, machine, layer
+        self.applied = False
+        self.setWindowTitle(f"Pustaka bahan — {machine}")
+        self.resize(460, 380)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"Layer aktif: <b>{layer.name or layer.index + 1}</b>. Preset berlaku per mesin "
+                             "(tidak ada nilai bawaan: ukur sendiri untuk laser & bahan Anda)."))
+        self.list = QListWidget()
+        self.list.currentTextChanged.connect(self._show)
+        lay.addWidget(self.list, 1)
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        lay.addWidget(self.info)
+        r1 = QHBoxLayout()
+        self.b_apply = QPushButton("Terapkan ke layer")
+        self.b_save = QPushButton("Simpan dari layer…")
+        self.b_del = QPushButton("Hapus")
+        for b in (self.b_apply, self.b_save, self.b_del):
+            r1.addWidget(b)
+        lay.addLayout(r1)
+        r2 = QHBoxLayout()
+        self.b_exp = QPushButton("Ekspor…")
+        self.b_imp = QPushButton("Impor…")
+        r2.addWidget(self.b_exp)
+        r2.addWidget(self.b_imp)
+        r2.addStretch(1)
+        close = QPushButton("Tutup")
+        close.clicked.connect(self.accept)
+        r2.addWidget(close)
+        lay.addLayout(r2)
+        self.b_apply.clicked.connect(self._apply)
+        self.b_save.clicked.connect(self._save)
+        self.b_del.clicked.connect(self._delete)
+        self.b_exp.clicked.connect(self._export)
+        self.b_imp.clicked.connect(self._import)
+        self.list.itemDoubleClicked.connect(lambda _i: self._apply())
+        self._fill()
+
+    def _fill(self, select=None):
+        self.list.clear()
+        names = self.materials.names(self.machine)
+        self.list.addItems(names)
+        if names:
+            self.list.setCurrentRow(names.index(select) if select in names else 0)
+        self._show(self.list.currentItem().text() if self.list.currentItem() else "")
+
+    def _show(self, name):
+        ent = self.materials.get(self.machine, name) if name else None
+        has = ent is not None
+        self.b_apply.setEnabled(has)
+        self.b_del.setEnabled(has)
+        self.b_exp.setEnabled(bool(self.materials.names(self.machine)))
+        if not has:
+            self.info.setText("Belum ada preset. Atur layer lalu klik 'Simpan dari layer…'." if not self.list.count() else "")
+            return
+        p = ent["params"]
+        txt = (f"Mode {p.get('mode')}, {p.get('speed'):g} mm/mnt, daya {p.get('power'):g}% "
+               f"(min {p.get('min_power', 0):g}%), {p.get('passes')} pass")
+        if ent.get("note"):
+            txt += f"\nCatatan: {ent['note']}"
+        self.info.setText(txt)
+
+    def _cur(self):
+        it = self.list.currentItem()
+        return it.text() if it else None
+
+    def _apply(self):
+        name = self._cur()
+        ent = self.materials.get(self.machine, name) if name else None
+        if not ent:
+            return
+        self.mat.apply_to_layer(self.layer, ent["params"])
+        self.applied = True
+        self.accept()
+
+    def _save(self):
+        name, ok = QInputDialog.getText(self, "Simpan preset", "Nama preset (mis. Kayu lapis 3 mm – potong):",
+                                        text=self._cur() or "")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in self.materials.names(self.machine):
+            if QMessageBox.question(self, "Timpa preset?", f"Preset \"{name}\" sudah ada. Timpa?",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+        note, ok = QInputDialog.getText(self, "Catatan (opsional)", "Catatan (fokus, jarak, bahan, dll.):")
+        self.materials.save(self.machine, name, self.layer, note if ok else "")
+        self._fill(name)
+
+    def _delete(self):
+        name = self._cur()
+        if name and QMessageBox.question(self, "Hapus preset", f"Hapus \"{name}\"?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+            self.materials.delete(self.machine, name)
+            self._fill()
+
+    def _export(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Ekspor pustaka bahan", "bahan.json", "JSON (*.json)")
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.materials.export_json(self.machine))
+
+    def _import(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Impor pustaka bahan", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                n = self.materials.import_json(self.machine, f.read())
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Gagal impor", str(e))
+            return
+        self._fill()
+        QMessageBox.information(self, "Impor", f"{n} preset ditambahkan (nama yang sudah ada dilewati).")
 
 
 class OffsetDialog(QDialog):

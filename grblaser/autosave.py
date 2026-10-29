@@ -27,6 +27,7 @@ def snapshot(project):
     pr.layers = [Layer.from_dict(l.to_dict()) for l in project.layers]
     pr.shapes = [s.clone() for s in project.shapes]
     pr.path = None
+    pr.mirror_x, pr.mirror_y = project.mirror_x, project.mirror_y
     return pr
 
 

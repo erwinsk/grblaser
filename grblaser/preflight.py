@@ -79,6 +79,10 @@ def check(project, dev, grbl=None, only_ids=None):
                              f"(objek: {bb[0]:.1f},{bb[1]:.1f} → {bb[2]:.1f},{bb[3]:.1f} mm di ruang desain). "
                              "GRBL bisa ALARM (soft limit) atau menabrak ujung rel."))
 
+    if getattr(project, "mirror_x", False) or getattr(project, "mirror_y", False):
+        ax = " dan ".join(n for n, on in (("horizontal (X)", project.mirror_x), ("vertikal (Y)", project.mirror_y)) if on)
+        out.append(Issue("warn", f"Pekerjaan DICERMINKAN {ax}. Pastikan ini disengaja (mis. mengukir dari sisi belakang)."))
+
     if grbl:
         s30 = _num(grbl, "$30")
         if s30 is not None and int(s30) != int(dev.s_max):

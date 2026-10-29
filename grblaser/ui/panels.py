@@ -83,6 +83,11 @@ class LayerPanel(QWidget):
             b.setToolTip(tip)
             b.clicked.connect(fn)
             btns.addWidget(b)
+        bm = QToolButton()
+        bm.setText("📚 Bahan…")
+        bm.setToolTip("Pustaka bahan: simpan/terapkan kecepatan, daya, dan pass untuk bahan tertentu")
+        bm.clicked.connect(self.win.materials_dialog)
+        btns.addWidget(bm)
         btns.addStretch(1)
         lay.addLayout(btns)
 
@@ -650,6 +655,17 @@ class ImagePanel(QWidget):
             qd.addWidget(b)
         lay.addLayout(qd)
 
+        rr = QHBoxLayout()
+        rr.addWidget(QLabel("Putar gambar:"))
+        self.rot = dsb(-180, 180, 5, 1, " °")
+        self.rot.setToolTip("Putar gambar searah jarum jam mengelilingi pusatnya (bebas, tidak harus 90°).\n"
+                            "Di kanvas: seret bulatan di atas kotak pilihan (Shift = kelipatan 15°).")
+        rr.addWidget(self.rot, 1)
+        b0 = QPushButton("0°")
+        b0.clicked.connect(lambda: self.rot.setValue(0))
+        rr.addWidget(b0)
+        lay.addLayout(rr)
+
         gb = QGroupBox("Potong (crop) & ukuran")
         g = QGridLayout(gb)
         self.crop = {}
@@ -683,6 +699,7 @@ class ImagePanel(QWidget):
         self.autolevel.toggled.connect(lambda v: self._set("autolevel", bool(v)))
         self.method.currentIndexChanged.connect(lambda i: self._set("method", self.method.currentData()))
         self.preset.activated.connect(self._preset)
+        self.rot.valueChanged.connect(self._rot_changed)
         self.refresh()
 
     def images(self):
@@ -723,6 +740,8 @@ class ImagePanel(QWidget):
         self.cell_ang.setValue(o.cell_angle)
         self.autolevel.setChecked(o.autolevel)
         self.invert.setChecked(o.invert)
+        a = ims[0].angle
+        self.rot.setValue(a if a <= 180 else a - 360)
         self.preset.setCurrentIndex(0)
         self._vis(o.method)
         self._loading = False
@@ -734,6 +753,11 @@ class ImagePanel(QWidget):
             return
         s = ims[0]
         o = s.opts
+        v = s.angle if s.angle <= 180 else s.angle - 360
+        if abs(self.rot.value() - v) > 0.06 and not self._loading:      # sinkron saat diputar dari kanvas
+            self._loading = True
+            self.rot.setValue(v)
+            self._loading = False
         cols, rows = raster._grid(s.w, s.h, o.lpmm)
         speed = max(self.win.project.layer(s.layer).speed, 1.0)
         est = rows * s.w / speed          # menit, kasar (tanpa lompat area putih / overscan)
@@ -763,6 +787,17 @@ class ImagePanel(QWidget):
         self.refresh()
         self.win.canvas.update()
 
+    def _rot_changed(self, v):
+        if self._loading:
+            return
+        ims = self.images()
+        if not ims:
+            return
+        self.win.push_undo("img-rot")
+        for s in ims:
+            s.set_angle(float(v))
+        self.win.geometry_edited()
+
     def _apply_crop(self):
         ims = self.images()
         if not ims:
@@ -770,6 +805,9 @@ class ImagePanel(QWidget):
         c = {k: sp.value() / 100.0 for k, sp in self.crop.items()}
         if c["l"] + c["r"] >= 0.95 or c["t"] + c["b"] >= 0.95:
             self.win.note("Potongan terlalu besar", 4000)
+            return
+        if any(abs(s.angle) > 1e-9 for s in ims):
+            self.win.note("Potong tidak tersedia untuk gambar yang diputar bebas. Setel putaran ke 0° dulu.", 5000)
             return
         self.win.push_undo()
         for s in ims:
@@ -1047,6 +1085,18 @@ class JobPanel(QWidget):
         v.addLayout(h)
         lay.addWidget(gb)
 
+        mrow = QHBoxLayout()
+        self.mir_x = QCheckBox("Cermin X")
+        self.mir_x.setToolTip("Cerminkan pekerjaan secara horizontal (kiri↔kanan) di G-code, mis. mengukir dari sisi belakang kaca/akrilik.\n"
+                              "Kotak pekerjaan tetap di tempatnya; hanya isinya yang dibalik.")
+        self.mir_y = QCheckBox("Cermin Y")
+        self.mir_y.setToolTip("Cerminkan pekerjaan secara vertikal (atas↔bawah) di G-code.")
+        self.mir_x.toggled.connect(self._mirror_changed)
+        self.mir_y.toggled.connect(self._mirror_changed)
+        mrow.addWidget(self.mir_x)
+        mrow.addWidget(self.mir_y)
+        mrow.addStretch(1)
+        lay.addLayout(mrow)
         self.sel_only = QCheckBox("Hanya objek terpilih")
         self.ret = QCheckBox("Kembali ke titik awal setelah selesai")
         self.ret.setChecked(dev.end_return == "origin")
@@ -1054,11 +1104,25 @@ class JobPanel(QWidget):
         lay.addWidget(self.sel_only)
         lay.addWidget(self.ret)
 
+        fr = QHBoxLayout()
+        self.frame_laser = QCheckBox("Bingkai: laser nyala")
+        self.frame_laser.setToolTip("Hanya untuk melihat posisi: laser menyala redup mengelilingi batas pekerjaan.\n"
+                                    "Gunakan daya serendah mungkin (mis. 0,5–2%). Aplikasi akan meminta konfirmasi setiap kali.")
+        self.frame_pow = dsb(0.1, 20, 0.5, 1, " %")
+        self.frame_pow.setToolTip("Daya laser saat bingkai, persen dari S maks (maks 20% di sini).")
+        self.frame_laser.setChecked(dev.frame_laser)
+        self.frame_pow.setValue(min(20.0, dev.frame_power if dev.frame_power > 0 else 1.0))
+        self.frame_pow.setEnabled(dev.frame_laser)
+        self.frame_laser.toggled.connect(self._frame_changed)
+        self.frame_pow.valueChanged.connect(self._frame_changed)
+        fr.addWidget(self.frame_laser)
+        fr.addWidget(self.frame_pow)
+        lay.addLayout(fr)
         b1 = QHBoxLayout()
         self.btn_prev = QPushButton("Pratinjau")
         self.btn_prev.clicked.connect(self.win.show_preview)
         self.btn_frame = QPushButton("Bingkai")
-        self.btn_frame.setToolTip("Gerakkan laser mengelilingi batas pekerjaan (laser mati / daya bingkai)")
+        self.btn_frame.setToolTip("Gerakkan laser mengelilingi batas pekerjaan (laser mati, atau menyala redup bila opsi di atas dicentang)")
         self.btn_frame.clicked.connect(self.win.frame_job)
         b1.addWidget(self.btn_prev)
         b1.addWidget(self.btn_frame)
@@ -1099,6 +1163,19 @@ class JobPanel(QWidget):
         if not getattr(self, "_loading", False) and hasattr(self.win, "profiles"):
             self.win.save_current_profile()
 
+    def _mirror_changed(self, *_):
+        if not getattr(self, "_loading", False):
+            self.win.set_mirror(self.mir_x.isChecked(), self.mir_y.isChecked())
+
+    def _frame_changed(self, *_):
+        if getattr(self, "_loading", False):
+            return
+        dev = self.win.project.device
+        dev.frame_laser = self.frame_laser.isChecked()
+        dev.frame_power = float(self.frame_pow.value())
+        self.frame_pow.setEnabled(dev.frame_laser)
+        self._persist()
+
     def _ret_changed(self, v):
         self.win.project.device.end_return = "origin" if v else "none"
         self._persist()
@@ -1125,6 +1202,12 @@ class JobPanel(QWidget):
             if b:
                 b.setChecked(True)
             self.ret.setChecked(dev.end_return == "origin")
+            self.frame_laser.setChecked(dev.frame_laser)
+            self.frame_pow.setValue(min(20.0, dev.frame_power if dev.frame_power > 0 else 1.0))
+            self.frame_pow.setEnabled(dev.frame_laser)
+            pr = self.win.project
+            self.mir_x.setChecked(pr.mirror_x)
+            self.mir_y.setChecked(pr.mirror_y)
             self._start_changed()
         finally:
             self._loading = False

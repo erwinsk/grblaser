@@ -163,15 +163,16 @@ def _filters(im, o: ImageOptions):
     return im
 
 
-def prepare(img, x, y, w_mm, h_mm, o: ImageOptions, use_angle=True):
+def prepare(img, x, y, w_mm, h_mm, o: ImageOptions, use_angle=True, mask=None):
     cols, rows = _grid(w_mm, h_mm, o.lpmm)
     im = img.convert("L").resize((cols, rows), Image.LANCZOS)
     im = _filters(im, o)
     angle = float(o.angle) if use_angle else 0.0
-    mask = None
+    # `mask` (opsional, mode L seukuran img): 0 = piksel kosong (mis. sudut kosong akibat rotasi bebas) -> tidak dibakar
+    mbase = mask.resize((cols, rows), Image.BILINEAR) if mask is not None else Image.new("L", (cols, rows), 255)
+    mask = np.asarray(mbase) >= 128 if mask is not None else None
     if abs(angle) > 1e-6:
-        mask_im = Image.new("L", (cols, rows), 255).rotate(
-            angle, expand=True, resample=Image.BILINEAR, fillcolor=0)
+        mask_im = mbase.rotate(angle, expand=True, resample=Image.BILINEAR, fillcolor=0)
         im = im.rotate(angle, expand=True, resample=Image.BILINEAR, fillcolor=255)
         mask = np.asarray(mask_im) >= 128
     G = tone(np.asarray(im), o)

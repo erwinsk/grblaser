@@ -2,6 +2,17 @@
 
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/); versi mengikuti [SemVer](https://semver.org/lang/id/).
 
+## [0.5.0] - 2026-10-29
+### Ditambahkan
+- **Rotasi bebas gambar raster**: sudut bebas lewat bulatan putar di kanvas (Shift = 15°) atau kolom "Putar gambar"; sudut kosong tidak ikut dibakar (juga pada mode negatif). Skala gambar yang diputar bersifat proporsional; crop tidak tersedia saat diputar.
+- **Teks bisa diedit**: teks dari alat Teks menyimpan parameternya (isi, font, ukuran, gaya, jarak) dan transformasinya; klik ganda atau `Ctrl+Enter` untuk mengedit tanpa kehilangan posisi/skala/putaran. Tersimpan di berkas proyek.
+- **Pustaka bahan** (`materials.py`): simpan/terapkan/hapus preset layer (mode, kecepatan, daya, pass, isian, air assist) per mesin; ekspor/impor JSON. Tanpa nilai bawaan (aman bergantung pada laser Anda).
+- **Cermin job** (Cermin X / Cermin Y) di panel Pekerjaan untuk mengukir dari sisi belakang; kotak pekerjaan tetap di tempat, pratinjau ikut tercermin, judul jendela menandai `[CERMIN]`, dan pemeriksaan sebelum jalan memberi peringatan. Tersimpan di proyek.
+- **Bingkai dengan laser menyala** (penunjuk posisi): opsi + daya (maks 20% di panel) di panel Pekerjaan; konfirmasi setiap kali; tersimpan di profil.
+- **Klik kanan di kanvas**: "Pindahkan laser ke sini" kini memakai `$J=` (dapat dibatalkan, semua mode awal), "…& jadikan titik awal pekerjaan", dan "Set nol mesin di posisi laser sekarang…" (dengan konfirmasi).
+### Diubah
+- Berkas/profil lama dengan `frame_power > 0` otomatis menyalakan opsi bingkai-laser agar perilaku lama tetap sama.
+
 ## [0.4.0] - 2026-10-29
 ### Ditambahkan
 - **Pemeriksaan sebelum jalan** (`preflight.py`): kesalahan memblokir (kecepatan ≤ 0, daya di luar 0–100%), peringatan (objek di luar area kerja, daya 0%, isian terlalu rapat,

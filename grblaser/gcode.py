@@ -26,11 +26,13 @@ def anchor_point(bounds, anchor):
     return x0 + (x1 - x0) * col / 2.0, y0 + (y1 - y0) * row / 2.0
 
 
-def make_transform(dev, bounds, start_from=None, anchor=None, current=None):
+def make_transform(dev, bounds, start_from=None, anchor=None, current=None, mirror=(False, False)):
     """Kembalikan fungsi T(x, y) -> (X, Y) mesin.
 
     start_from='absolute' : desain (0,0) kiri-atas bed == pojok bed pada koordinat kerja.
     start_from='current'  : titik jangkar desain diletakkan di posisi laser saat ini.
+    mirror=(mx, my)       : cerminkan pekerjaan terhadap pusat kotak pembatasnya (kotaknya tetap di tempat), mis. untuk
+                            mengukir dari sisi belakang kaca/akrilik. Berlaku sebelum penempatan di atas.
     """
     start_from = start_from or dev.start_from
     anchor = dev.anchor if anchor is None else anchor
@@ -51,6 +53,14 @@ def make_transform(dev, bounds, start_from=None, anchor=None, current=None):
             def T(x, y):
                 return (x, y)
         T.origin = (0.0, 0.0)
+    mx, my = mirror
+    if (mx or my) and bounds is not None:
+        sx, sy = bounds[0] + bounds[2], bounds[1] + bounds[3]
+        T0 = T
+
+        def T(x, y):                       # noqa: F811 - bekerja juga untuk array numpy
+            return T0(sx - x if mx else x, sy - y if my else y)
+        T.origin = T0.origin
     return T
 
 
@@ -179,7 +189,7 @@ def frame_lines(dev, T, bounds):
     pts = [T(*c) for c in corners]
     lines = ["G21", "G90"]
     lines.append(f"G0 X{fmt(pts[0][0])} Y{fmt(pts[0][1])}")
-    if dev.frame_power > 0:
+    if dev.frame_laser and dev.frame_power > 0:
         s = int(round(dev.frame_power / 100.0 * dev.s_max))
         lines.append(f"{dev.laser_cmd} S{s}")
         first = True

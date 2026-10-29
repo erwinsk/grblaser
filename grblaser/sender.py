@@ -189,6 +189,13 @@ class GrblSender(QObject):
         parts.append(f"F{feed:.0f}")
         self._write(("".join(parts) + "\n").encode())
 
+    def jog_to(self, x, y, feed=3000.0):
+        """Jog ke koordinat kerja absolut (G90). Memakai `$J=` sehingga bisa dibatalkan dan tidak mengubah mode GRBL."""
+        if not self.connected or self._running:
+            return False
+        self._write(f"$J=G21G90X{x:.3f}Y{y:.3f}F{feed:.0f}\n".encode())
+        return True
+
     def jog_cancel(self):
         self.realtime(0x85)
 

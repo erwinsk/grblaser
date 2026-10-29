@@ -44,6 +44,7 @@ class Canvas(QWidget):
     textRequested = pyqtSignal(float, float)
     filesDropped = pyqtSignal(list)
     contextRequested = pyqtSignal(object, float, float)
+    doubleClicked = pyqtSignal(float, float)
     cursorMoved = pyqtSignal(float, float)
     toolReset = pyqtSignal()
     deleteRequested = pyqtSignal()
@@ -157,6 +158,15 @@ class Canvas(QWidget):
             if not (b[0] - tol <= x <= b[2] + tol and b[1] - tol <= y <= b[3] + tol):
                 continue
             if isinstance(s, ImageShape):
+                if abs(s.angle) > 1e-9:       # uji titik pada persegi yang diputar
+                    cx, cy = s.center()
+                    th = math.radians(-s.angle)
+                    dx, dy = x - cx, y - cy
+                    u = dx * math.cos(th) - dy * math.sin(th)
+                    v = dx * math.sin(th) + dy * math.cos(th)
+                    if abs(u) <= s.w / 2 and abs(v) <= s.h / 2:
+                        return s
+                    continue
                 if b[0] <= x <= b[2] and b[1] <= y <= b[3]:
                     return s
                 continue
@@ -339,6 +349,12 @@ class Canvas(QWidget):
         col = QColor(L.color)
         if isinstance(s, ImageShape):
             r = QRectF(s.x, s.y, s.w, s.h)
+            rotated = abs(s.angle) > 1e-9
+            if rotated:
+                p.save()
+                p.translate(r.center())
+                p.rotate(s.angle)             # searah jarum jam pada sumbu Y ke bawah
+                r = QRectF(-s.w / 2, -s.h / 2, s.w, s.h)
             if L.mode == "image":
                 pm = self._image_pixmap(s)
                 if pm is not None:
@@ -352,6 +368,8 @@ class Canvas(QWidget):
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawRect(r)
+            if rotated:
+                p.restore()
             return
         path = self._shape_path(s)
         pen = QPen(col, 2.2 if selected else 1.4)
@@ -378,7 +396,7 @@ class Canvas(QWidget):
         return pts
 
     def _can_rotate(self):
-        return not any(isinstance(s, ImageShape) for s in self.selected_shapes())
+        return True
 
     def _draw_selection(self, p):
         bb = self.sel_bbox()
@@ -714,6 +732,13 @@ class Canvas(QWidget):
         self._fitted = True
         self._user_view = True
         self.update()
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton and self.tool == "select":
+            x, y = self.s2w(e.pos())
+            self.doubleClicked.emit(x, y)
+            return
+        super().mouseDoubleClickEvent(e)
 
     def contextMenuEvent(self, e):
         if self.tool == "polyline" and self._poly_pts:

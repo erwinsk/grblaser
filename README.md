@@ -56,7 +56,7 @@ Distro lain: `pip install -r requirements.txt` (di venv, dengan `--system-site-p
 
 ## Pintasan
 
-`S` pilih · `R` persegi · `E` elips · `L` garis · `T` teks · `F` zoom bed · `F5` pratinjau · `F6` bingkai · `F7` mulai · `F8` jeda · `F9` henti · `Ctrl+I` impor · `Ctrl+E` ekspor G-code · `Ctrl+D` duplikat · panah = geser 1 mm (Shift 10, Ctrl 0,1).
+`Ctrl+G` grup · `Ctrl+Shift+G` pisah grup · `Ctrl+Enter` edit teks · `S` pilih · `R` persegi · `E` elips · `L` garis · `T` teks · `F` zoom bed · `F5` pratinjau · `F6` bingkai · `F7` mulai · `F8` jeda · `F9` henti · `Ctrl+I` impor · `Ctrl+E` ekspor G-code · `Ctrl+D` duplikat · panah = geser 1 mm (Shift 10, Ctrl 0,1).
 Kanvas: roda = zoom, tombol tengah / Spasi+seret = geser, sudut kotak = skala (Shift = bebas), bulatan atas = putar (Shift = 15°).
 
 ## Struktur & tes
@@ -116,9 +116,13 @@ Arsitektur singkat: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Simpan otomatis**: salinan berkala di `~/.local/share/grblaser/autosave.glz`; ditawarkan untuk dipulihkan setelah crash.
 - **Mesin proyek & profil**: proyek mengingat mesin pembuatnya dan menanyakan bila berbeda dari mesin aktif; perubahan titik awal/jangkar tersimpan otomatis ke profil; profil bisa diganti namanya.
 
+## Pembaruan (v0.5)
+
+- **Rotasi bebas gambar**, **teks yang bisa diedit** (klik ganda / `Ctrl+Enter`), **pustaka bahan** (tombol 📚 Bahan… di panel Layer), **Cermin X/Y** untuk mengukir dari sisi belakang, **bingkai dengan laser menyala** (penunjuk posisi, daya rendah, konfirmasi), dan menu klik kanan kanvas untuk memindahkan laser / menjadikan titik itu awal pekerjaan.
+
 ## Batasan saat ini
 
-- Gambar raster hanya bisa diputar kelipatan 90° (gunakan *Sudut pindai* untuk memiringkan hasil).
+- Gambar yang diputar bebas hanya bisa diskalakan proporsional dan tidak bisa di-crop (setel putaran ke 0° dulu).
 - Belum ada node editing (mengubah titik kurva satu per satu).
 - Boolean & offset butuh `shapely`; tanpa itu, menu-nya hanya menampilkan petunjuk pemasangan.
 - Hanya sumbu X/Y (tanpa Z/rotary); belum ada kamera/penyejajaran.

@@ -324,7 +324,8 @@ def image_ops(shape, layer, dev):
     o = shape.opts
     if o.method == "trace":
         return []
-    P = raster.prepare(shape.img, shape.x, shape.y, shape.w, shape.h, o)
+    img, mask, x, y, w, h = shape.rotated(o.lpmm)
+    P = raster.prepare(img, x, y, w, h, o, mask=mask)
     D = P.D
     pmax, pmin = layer.power, layer.min_power
     if o.method == "gray":
