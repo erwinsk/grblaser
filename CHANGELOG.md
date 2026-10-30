@@ -2,6 +2,15 @@
 
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/); versi mengikuti [SemVer](https://semver.org/lang/id/).
 
+## [0.6.0] - 2026-10-30
+### Ditambahkan
+- **Lanjutkan job** (`resume.py`): setelah ALARM/berhenti/listrik mati, `Laser → ↻ Lanjutkan dari baris…` (Ctrl+F7) melanjutkan dari baris pilihan (saran: mundur 25 baris dari "ok" terakhir). Job terakhir + kemajuannya disimpan ke disk, jadi bisa dilanjutkan setelah aplikasi ditutup. Posisi mesin tidak boleh bergeser sejak berhenti.
+- **Generator uji bahan** (`materialtest.py`): grid kecepatan × daya, satu layer per sel (+label terukir); `Susun → Uji bahan…` dan `Hapus objek & layer uji bahan`. Sel terbaik bisa disimpan ke pustaka bahan.
+- **Urutan potong lebih pendek**: tetangga-terdekat + 2-opt + pemilihan titik masuk jalur tertutup (gerak cepat turun ±10–25%).
+- **Simulasi jalur laser** (`simulation.py`, Shift+F5): animasi urutan/arah bakar dengan kecepatan ×1…×2000, geser waktu, penanda laser menyala; mengikuti cermin.
+- **Rotary** (chuck/roller): skala sumbu Y dari diameter benda; peringatan pra-jalan. **EKSPERIMENTAL — belum diuji pada rotary sungguhan.**
+- **Firmware**: GRBL-HAL (protokol sama) dan **Marlin (eksperimental, belum diuji pada mesin)**: G-code standar, tanpa `$$`, jeda lewat berhenti mengirim, M114 untuk posisi.
+
 ## [0.5.0] - 2026-10-29
 ### Ditambahkan
 - **Rotasi bebas gambar raster**: sudut bebas lewat bulatan putar di kanvas (Shift = 15°) atau kolom "Putar gambar"; sudut kosong tidak ikut dibakar (juga pada mode negatif). Skala gambar yang diputar bersifat proporsional; crop tidak tersedia saat diputar.

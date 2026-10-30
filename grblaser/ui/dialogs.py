@@ -71,6 +71,32 @@ class DeviceDialog(QDialog):
         f.addRow("Air assist hidup", self.air_on)
         f.addRow("Air assist mati", self.air_off)
         f.addRow("Baud rate", self.baud)
+        self.fw = QComboBox()
+        self.fw.addItem("GRBL", "grbl")
+        self.fw.addItem("GRBL-HAL (protokol sama)", "grbl-hal")
+        self.fw.addItem("Marlin (eksperimental)", "marlin")
+        self.fw.setToolTip("Marlin: dukungan eksperimental, belum diuji pada mesin sungguhan. Tidak ada pembacaan $$.")
+        self.rot = QCheckBox("Rotary (sumbu Y memutar benda)")
+        self.rmode = QComboBox()
+        self.rmode.addItem("Chuck (rahang/jepit)", "chuck")
+        self.rmode.addItem("Roller (rol penyangga)", "roller")
+        self.odia = _dspin(1, 2000, dev.object_diameter, 1, " mm")
+        self.rdia = _dspin(1, 2000, dev.roller_diameter, 1, " mm")
+        self.mmrot = _dspin(1, 100000, dev.mm_per_rotation, 2, " mm/putaran")
+        self.mmrot.setToolTip("Gerak Y mesin untuk satu putaran penuh (mode chuck). Isi 360 bila $101 diatur dalam derajat.")
+        self.rot_info = QLabel("")
+        f.addRow("Firmware", self.fw)
+        f.addRow(self.rot)
+        f.addRow("Mode rotary", self.rmode)
+        f.addRow("Diameter benda", self.odia)
+        f.addRow("Diameter rol", self.rdia)
+        f.addRow("Gerak Y per putaran", self.mmrot)
+        f.addRow(self.rot_info)
+        self._set_rotary(dev)
+        for w in (self.rot, self.rmode):
+            (w.toggled if w is self.rot else w.currentIndexChanged).connect(self._rot_upd)
+        for w in (self.odia, self.rdia, self.mmrot):
+            w.valueChanged.connect(self._rot_upd)
         lay = QVBoxLayout(self)
         if profiles is not None:
             pr = QHBoxLayout()
@@ -106,7 +132,28 @@ class DeviceDialog(QDialog):
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
 
+    def _set_rotary(self, d):
+        self.fw.setCurrentIndex(max(0, self.fw.findData(d.firmware)))
+        self.rot.setChecked(d.rotary)
+        self.rmode.setCurrentIndex(max(0, self.rmode.findData(d.rotary_mode)))
+        self.odia.setValue(d.object_diameter)
+        self.rdia.setValue(d.roller_diameter)
+        self.mmrot.setValue(d.mm_per_rotation)
+        self._rot_upd()
+
+    def _rot_upd(self, *_):
+        on = self.rot.isChecked()
+        roller = self.rmode.currentData() == "roller"
+        for w in (self.rmode, self.odia):
+            w.setEnabled(on)
+        self.rdia.setEnabled(on and roller)
+        self.mmrot.setEnabled(on and not roller)
+        d = Device(rotary=on, rotary_mode=self.rmode.currentData(), object_diameter=self.odia.value(),
+                   roller_diameter=self.rdia.value(), mm_per_rotation=self.mmrot.value())
+        self.rot_info.setText(f"Skala Y ×{d.rotary_scale():.4f}; keliling benda ≈ {3.14159265 * d.object_diameter:.1f} mm" if on else "")
+
     def _load_into(self, d: Device):
+        self._set_rotary(d)
         self.name.setText(d.name)
         self.w.setValue(d.bed_w)
         self.h.setValue(d.bed_h)
@@ -196,6 +243,10 @@ class DeviceDialog(QDialog):
         dev.air_on = self.air_on.text() or "M8"
         dev.air_off = self.air_off.text() or "M9"
         dev.baud = int(self.baud.currentData())
+        dev.firmware = self.fw.currentData()
+        dev.rotary, dev.rotary_mode = self.rot.isChecked(), self.rmode.currentData()
+        dev.object_diameter, dev.roller_diameter = self.odia.value(), self.rdia.value()
+        dev.mm_per_rotation = self.mmrot.value()
         for k, v in self._extra.items():
             setattr(dev, k, v)
 
@@ -452,6 +503,140 @@ class MaterialsDialog(QDialog):
             return
         self._fill()
         QMessageBox.information(self, "Impor", f"{n} preset ditambahkan (nama yang sudah ada dilewati).")
+
+
+class ResumeDialog(QDialog):
+    """Pilih baris awal untuk melanjutkan pekerjaan yang terhenti."""
+
+    def __init__(self, lines, default_index, meta_text="", parent=None):
+        super().__init__(parent)
+        from .. import resume as rs
+        self.rs, self.lines = rs, lines
+        self.setWindowTitle("Lanjutkan pekerjaan")
+        self.resize(480, 320)
+        lay = QVBoxLayout(self)
+        if meta_text:
+            lay.addWidget(QLabel(meta_text))
+        warn = QLabel("<b>Syarat:</b> mesin tidak boleh bergeser/ter-reset sejak berhenti (posisi harus sama). "
+                      "Bila ragu, <i>Home</i> dulu dan pastikan bahan tidak berubah posisi. "
+                      "Mundur beberapa baris disarankan karena antrean GRBL yang sudah di-OK belum tentu selesai dijalankan.")
+        warn.setWordWrap(True)
+        lay.addWidget(warn)
+        f = QFormLayout()
+        self.n = QSpinBox()
+        self.n.setRange(1, max(1, len(lines)))
+        self.n.setValue(min(len(lines), default_index + 1))
+        self.n.setToolTip("Nomor baris G-code (mulai 1) tempat pekerjaan dilanjutkan.")
+        f.addRow(f"Mulai dari baris (1–{len(lines)})", self.n)
+        lay.addLayout(f)
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        lay.addWidget(self.info)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Lanjutkan")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.n.valueChanged.connect(self._upd)
+        self._upd()
+
+    def index(self):
+        return self.n.value() - 1
+
+    def _upd(self):
+        _, inf = self.rs.plan_resume(self.lines, self.index())
+        pos = "belum ada gerakan" if inf["x"] is None and inf["y"] is None else \
+            f"X {inf['x'] if inf['x'] is not None else '–'}, Y {inf['y'] if inf['y'] is not None else '–'}"
+        self.info.setText(f"Laser (mati) menuju {pos}"
+                          + (f"; F{inf['f']:g}" if inf["f"] is not None else "")
+                          + (f"; daya S{inf['s']:g}" if inf["s"] else "")
+                          + (" ; air assist hidup" if inf["air"] else "")
+                          + f"\nBaris ini: <code>{inf['line']}</code>")
+
+
+class MaterialTestDialog(QDialog):
+    """Parameter generator uji bahan (grid kecepatan × daya)."""
+
+    def __init__(self, existing_layers, bed, parent=None):
+        super().__init__(parent)
+        from .. import materialtest as mt
+        self.mt, self.existing, self.bed = mt, existing_layers, bed
+        self.setWindowTitle("Generator uji bahan")
+        f = QFormLayout()
+        d = mt.TestParams()
+        self.cols = QSpinBox()
+        self.cols.setRange(1, 10)
+        self.cols.setValue(d.cols)
+        self.rows = QSpinBox()
+        self.rows.setRange(1, 10)
+        self.rows.setValue(d.rows)
+        self.pmin = _dspin(0, 100, d.p_min, 1, " %")
+        self.pmax = _dspin(0, 100, d.p_max, 1, " %")
+        self.vmin = _dspin(10, 100000, d.v_min, 0, " mm/mnt")
+        self.vmax = _dspin(10, 100000, d.v_max, 0, " mm/mnt")
+        self.size = _dspin(1, 100, d.size, 1, " mm")
+        self.gap = _dspin(0, 50, d.gap, 1, " mm")
+        self.mode = QComboBox()
+        self.mode.addItem("Isi (ukir kotak)", "fill")
+        self.mode.addItem("Garis (potong/gores kotak)", "line")
+        self.interval = _dspin(0.01, 2, d.interval, 3, " mm")
+        self.passes = QSpinBox()
+        self.passes.setRange(1, 20)
+        self.labels = QCheckBox("Beri label daya & kecepatan (diukir)")
+        self.labels.setChecked(True)
+        self.lpow = _dspin(0.1, 100, d.label_power, 1, " %")
+        f.addRow("Kolom (variasi daya)", self.cols)
+        f.addRow("Baris (variasi kecepatan)", self.rows)
+        f.addRow("Daya terendah", self.pmin)
+        f.addRow("Daya tertinggi", self.pmax)
+        f.addRow("Kecepatan terendah (baris atas)", self.vmin)
+        f.addRow("Kecepatan tertinggi (baris bawah)", self.vmax)
+        f.addRow("Ukuran kotak", self.size)
+        f.addRow("Jarak antar kotak", self.gap)
+        f.addRow("Mode", self.mode)
+        f.addRow("Jarak garis isian", self.interval)
+        f.addRow("Jumlah pass", self.passes)
+        f.addRow(self.labels)
+        f.addRow("Daya label", self.lpow)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Tiap sel menjadi layer sendiri (\"Uji …\"). Setelah mencoba, pilih layer sel terbaik lalu "
+                             "simpan lewat tombol <b>📚 Bahan…</b>. Mulailah dari daya rendah!"))
+        lay.addLayout(f)
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        lay.addWidget(self.info)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.bb = bb
+        for w in (self.cols, self.rows, self.pmin, self.pmax, self.vmin, self.vmax, self.size, self.gap):
+            w.valueChanged.connect(self._upd)
+        self.labels.toggled.connect(self._upd)
+        self._upd()
+
+    def params(self):
+        return self.mt.TestParams(cols=self.cols.value(), rows=self.rows.value(), p_min=self.pmin.value(),
+                                  p_max=self.pmax.value(), v_min=self.vmin.value(), v_max=self.vmax.value(),
+                                  size=self.size.value(), gap=self.gap.value(), mode=self.mode.currentData(),
+                                  interval=self.interval.value(), passes=self.passes.value(),
+                                  labels=self.labels.isChecked(), label_power=self.lpow.value())
+
+    def _upd(self):
+        p = self.params()
+        err = self.mt.validate(p, self.existing)
+        w, h, _l, _t = self.mt.extent(p)
+        txt = f"Ukuran grid ≈ {w:.0f} × {h:.0f} mm; {p.cols * p.rows} sel."
+        if err:
+            txt += f"\n⚠ {err}"
+        elif w > self.bed[0] or h > self.bed[1]:
+            txt += f"\n⚠ Lebih besar dari area kerja {self.bed[0]:g}×{self.bed[1]:g} mm."
+        self.info.setText(txt)
+        self.bb.button(QDialogButtonBox.Ok).setEnabled(err is None)
+
+    def _ok(self):
+        if self.mt.validate(self.params(), self.existing) is None:
+            self.accept()
 
 
 class OffsetDialog(QDialog):

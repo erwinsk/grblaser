@@ -161,6 +161,93 @@ def _nearest_order(polys, cur):
     return out
 
 
+def _ends(p):
+    """(titik masuk, titik keluar) sebuah jalur; jalur tertutup keluar di titik masuknya."""
+    return (p.pts[0], p.pts[0]) if p.closed else (p.pts[0], p.pts[-1])
+
+
+def travel_length(polys, cur=(0.0, 0.0)):
+    """Total jarak gerak cepat (laser mati) antar jalur menurut urutan yang diberikan."""
+    total, c = 0.0, np.asarray(cur, dtype=float)
+    for p in polys:
+        s_, e_ = _ends(p)
+        total += float(np.hypot(*(np.asarray(s_) - c)))
+        c = np.asarray(e_)
+    return total
+
+
+def _two_opt(items, cur, max_n=2000, max_pass=60):
+    """Perbaikan 2-opt dengan pembalikan jalur terbuka. `items` = daftar Poly; mengembalikan daftar baru."""
+    n = len(items)
+    if n < 3 or n > max_n:
+        return items
+    items = list(items)
+    S = np.array([_ends(p)[0] for p in items], dtype=float)
+    E = np.array([_ends(p)[1] for p in items], dtype=float)
+    openp = np.array([not p.closed for p in items])
+    c0 = np.asarray(cur, dtype=float)
+    for _ in range(max_pass):
+        improved = False
+        for i in range(n - 1):
+            prev = c0 if i == 0 else E[i - 1]
+            j = np.arange(i + 1, n)
+            # sebelum: prev->S[i] ... E[j]->S[j+1]; sesudah (blok i..j dibalik): prev->E[j] ... S[i]->S[j+1]
+            nxt = np.where(j + 1 < n, 1.0, 0.0)
+            S_next = S[np.minimum(j + 1, n - 1)]
+            old = (np.hypot(*(prev - S[i])) + np.hypot(*(E[j] - S_next).T) * nxt)
+            new = (np.hypot(*(prev - E[j]).T) + np.hypot(*(S[i] - S_next).T) * nxt)
+            delta = new - old
+            k = int(np.argmin(delta))
+            if delta[k] < -1e-9:
+                jj = int(j[k])
+                blk = list(range(i, jj + 1))[::-1]
+                newitems, newS, newE = [], [], []
+                for t in blk:
+                    p = items[t]
+                    if openp[t]:
+                        p = Poly(p.pts[::-1], False)
+                        newS.append(E[t].copy())        # salin: S/E ditimpa di bawah
+                        newE.append(S[t].copy())
+                    else:
+                        newS.append(S[t].copy())
+                        newE.append(E[t].copy())
+                    newitems.append(p)
+                items[i:jj + 1] = newitems
+                S[i:jj + 1] = np.array(newS)
+                E[i:jj + 1] = np.array(newE)
+                openp[i:jj + 1] = openp[blk]
+                improved = True
+        if not improved:
+            break
+    return items
+
+
+def _retarget_closed(items, cur):
+    """Pilih titik masuk terbaik tiap jalur tertutup: meminimalkan jarak dari jalur sebelumnya + ke jalur berikutnya."""
+    out = list(items)
+    prev = np.asarray(cur, dtype=float)
+    for i, p in enumerate(out):
+        if p.closed and len(p.pts) > 3:
+            nxt = _ends(out[i + 1])[0] if i + 1 < len(out) else None
+            d = np.hypot(p.pts[:, 0] - prev[0], p.pts[:, 1] - prev[1])
+            if nxt is not None:
+                d = d + np.hypot(p.pts[:, 0] - nxt[0], p.pts[:, 1] - nxt[1])
+            k = int(np.argmin(d))
+            if k:
+                out[i] = Poly(np.roll(p.pts, -k, axis=0), True)
+        prev = np.asarray(_ends(out[i])[1])
+    return out
+
+
+def optimize_order(polys, cur=(0.0, 0.0)):
+    """Urutan jalur dengan gerak cepat pendek: tetangga-terdekat lalu 2-opt, lalu pilih titik masuk jalur tertutup."""
+    if len(polys) <= 1:
+        return list(polys)
+    seq = _nearest_order(polys, cur)
+    seq = _two_opt(seq, cur)
+    return _retarget_closed(seq, cur)
+
+
 def order_paths(polys, inner_first=True):
     if len(polys) <= 1:
         return list(polys)
@@ -169,7 +256,7 @@ def order_paths(polys, inner_first=True):
     cur = (0.0, 0.0)
     for d in sorted(set(depth), reverse=True):
         grp = [p for p, dd in zip(polys, depth) if dd == d]
-        ordered = _nearest_order(grp, cur)
+        ordered = optimize_order(grp, cur)
         out.extend(ordered)
         if ordered:
             last = ordered[-1]

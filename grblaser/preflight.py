@@ -71,7 +71,20 @@ def check(project, dev, grbl=None, only_ids=None):
         if L.mode == "fill" and 0 < L.interval < 0.02:
             out.append(Issue("warn", f"{nm}: jarak garis isian {L.interval:g} mm sangat rapat; G-code bisa sangat besar dan lambat."))
 
-    if dev.start_from == "absolute":
+    if dev.rotary:
+        bb = design_bounds(project, only_ids)
+        k = dev.rotary_scale()
+        out.append(Issue("warn", f"Mode ROTARY aktif ({'rol' if dev.rotary_mode == 'roller' else 'chuck'}, benda Ø{dev.object_diameter:g} mm, "
+                                 f"skala Y ×{k:.4f}). Pastikan pengaturan sumbu Y/rotary di mesin sesuai."))
+        if bb is not None:
+            circ = 3.141592653589793 * dev.object_diameter
+            if bb[3] - bb[1] > circ + EPS and dev.rotary_mode == "chuck":
+                out.append(Issue("warn", f"Tinggi desain {bb[3] - bb[1]:.1f} mm melebihi keliling benda ({circ:.1f} mm): ujung akan menimpa awal."))
+            if (bb[3] - bb[1]) * k > dev.bed_h + EPS:
+                out.append(Issue("warn", f"Gerak sumbu Y setelah skala rotary ({(bb[3] - bb[1]) * k:.1f} mm) melebihi tinggi area kerja {dev.bed_h:g} mm."))
+            if bb[0] < -EPS or bb[2] > dev.bed_w + EPS:
+                out.append(Issue("warn", "Sebagian pekerjaan berada di luar lebar area kerja."))
+    elif dev.start_from == "absolute":
         bb = design_bounds(project, only_ids)
         if bb is not None and (bb[0] < -EPS or bb[1] < -EPS or bb[2] > dev.bed_w + EPS or bb[3] > dev.bed_h + EPS):
             out.append(Issue("warn",

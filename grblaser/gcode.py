@@ -54,6 +54,14 @@ def make_transform(dev, bounds, start_from=None, anchor=None, current=None, mirr
                 return (x, y)
         T.origin = (0.0, 0.0)
     mx, my = mirror
+    k = dev.rotary_scale()
+    if k != 1.0:                           # rotary: sumbu Y diskalakan terhadap titik asal penempatan
+        Tr, oy = T, T.origin[1]
+
+        def T(x, y):                       # noqa: F811
+            X, Y = Tr(x, y)
+            return (X, oy + k * (Y - oy))
+        T.origin = Tr.origin
     if (mx or my) and bounds is not None:
         sx, sy = bounds[0] + bounds[2], bounds[1] + bounds[3]
         T0 = T

@@ -14,6 +14,7 @@ import serial.tools.list_ports
 from PyQt5.QtCore import QObject, pyqtSignal
 
 RX_BUFFER = 127
+MARLIN_POS_RE = re.compile(r"X:\s*(-?[\d.]+)\s+Y:\s*(-?[\d.]+)(?:\s+Z:\s*(-?[\d.]+))?")
 STATUS_RE = re.compile(r"<([^|>]+)(?:\|([^>]*))?>")
 
 ALARMS = {
@@ -69,6 +70,18 @@ class GrblSender(QObject):
         self._banner_deadline = 0.0
         self._quiet = False
         self._last_prog = 0.0
+        # firmware: "grbl" | "grbl-hal" (protokol sama dengan GRBL) | "marlin" (EKSPERIMENTAL, belum diuji di mesin)
+        self.firmware = "grbl"
+        self.rx_buffer = RX_BUFFER
+        self._last_m114 = 0.0
+
+    @property
+    def marlin(self):
+        return self.firmware == "marlin"
+
+    def set_firmware(self, fw):
+        self.firmware = fw if fw in ("grbl", "grbl-hal", "marlin") else "grbl"
+        self.rx_buffer = 96 if self.marlin else RX_BUFFER
 
     # -- koneksi -----------------------------------------------------------
     @property
@@ -94,6 +107,11 @@ class GrblSender(QObject):
         self.connected_changed.emit(True)
         self.log.emit("info", f"Terhubung ke {port} @ {baud}")
         time.sleep(0.15)
+        if self.marlin:                   # Marlin tidak punya banner reset realtime; anggap siap
+            self._awaiting_banner = False
+            self.state = "Idle"
+            self.log.emit("info", "Mode Marlin (eksperimental): perintah gerak/status memakai G-code standar.")
+            return True
         try:
             self.ser.write(b"\x18")   # soft reset -> banner GRBL
         except Exception:
@@ -152,12 +170,20 @@ class GrblSender(QObject):
 
     # -- realtime & kontrol -------------------------------------------------
     def hold(self):
+        if self.marlin:                   # tidak ada feed-hold realtime: berhenti mengirim baris baru
+            self._paused = True
+            self.state = "Hold:0"
+            self.job_state.emit("paused")
+            return
         self.realtime(0x21)
         self._paused = True
         self.job_state.emit("paused")
 
     def resume(self):
-        self.realtime(0x7E)
+        if not self.marlin:
+            self.realtime(0x7E)
+        else:
+            self.state = "Run" if self._running else "Idle"
         self._paused = False
         if self._running:
             self.job_state.emit("running")
@@ -168,9 +194,12 @@ class GrblSender(QObject):
             return
         self._stop_req = True
         self._running = False
-        self.realtime(0x21)
-        time.sleep(0.12)
-        self.realtime(0x18)
+        if self.marlin:
+            self._write(b"M410\nM5\n")      # quick stop + laser mati
+        else:
+            self.realtime(0x21)
+            time.sleep(0.12)
+            self.realtime(0x18)
         with self._cond:
             self._pending.clear()
             self._pend_bytes = 0
@@ -180,6 +209,10 @@ class GrblSender(QObject):
 
     def jog(self, dx=0.0, dy=0.0, feed=3000.0):
         if not self.connected or self._running:
+            return
+        if self.marlin:
+            a = ["G0"] + [f"{k}{v:.3f}" for k, v in (("X", dx), ("Y", dy)) if v] + [f"F{feed:.0f}"]
+            self._write(("G91\n" + " ".join(a) + "\nG90\n").encode())
             return
         parts = ["$J=G21G91"]
         if dx:
@@ -193,26 +226,35 @@ class GrblSender(QObject):
         """Jog ke koordinat kerja absolut (G90). Memakai `$J=` sehingga bisa dibatalkan dan tidak mengubah mode GRBL."""
         if not self.connected or self._running:
             return False
+        if self.marlin:
+            self._write(f"G90\nG0 X{x:.3f} Y{y:.3f} F{feed:.0f}\n".encode())
+            return True
         self._write(f"$J=G21G90X{x:.3f}Y{y:.3f}F{feed:.0f}\n".encode())
         return True
 
     def jog_cancel(self):
-        self.realtime(0x85)
+        if self.marlin:
+            self._write(b"M410\n")
+        else:
+            self.realtime(0x85)
 
     def home(self):
-        self.send_line("$H")
+        self.send_line("G28 X Y" if self.marlin else "$H")
 
     def unlock(self):
-        self.send_line("$X")
+        self.send_line("M999" if self.marlin else "$X")
 
     def zero_here(self):
-        self.send_line("G10 L20 P1 X0 Y0")
+        self.send_line("G92 X0 Y0" if self.marlin else "G10 L20 P1 X0 Y0")
 
     def goto_zero(self):
         self.send_line("G90 G0 X0 Y0")
 
     def reset(self):
-        self.realtime(0x18)
+        if self.marlin:
+            self._write(b"M410\nM5\n")
+        else:
+            self.realtime(0x18)
 
     def laser_test(self, pct, smax, cmd="M3"):
         s = int(round(pct / 100.0 * smax))
@@ -222,7 +264,8 @@ class GrblSender(QObject):
         self.send_line("M5")
 
     def request_settings(self):
-        self.send_line("$$")
+        if not self.marlin:               # Marlin: tidak ada $$; pemeriksaan pengaturan dilewati
+            self.send_line("$$")
 
     # -- job -----------------------------------------------------------------
     def start_job(self, lines, quiet=False, prepared=False):
@@ -267,7 +310,7 @@ class GrblSender(QObject):
                     continue
                 line = self._lines[self._sent]
                 need = len(line) + 1
-                if self._pend_bytes + need > RX_BUFFER or self._paused and False:
+                if self._pend_bytes + need > self.rx_buffer or (self.marlin and self._paused):
                     self._cond.wait(0.02)
                     continue
                 self._pending.append(need)
@@ -308,14 +351,39 @@ class GrblSender(QObject):
                     if line:
                         self._handle(line)
             now = time.time()
-            if now - last_poll > 0.2 and self.connected:
+            if now - last_poll > (1.0 if self.marlin else 0.2) and self.connected:
                 last_poll = now
                 try:
-                    self.ser.write(b"?")
+                    if not self.marlin:
+                        self.ser.write(b"?")
+                    elif not self._running:       # M114 saat streaming akan mengacaukan hitungan 'ok'
+                        self.ser.write(b"M114\n")
                 except Exception:
                     pass
 
+    def _handle_marlin(self, line):
+        """Normalisasi balasan Marlin ke bentuk GRBL; True bila sudah ditangani."""
+        low = line.lower()
+        if low.startswith("ok"):
+            return self._handle("ok") or True
+        if low.startswith("error:") or low.startswith("!!"):
+            return self._handle("error:0") or True
+        m = MARLIN_POS_RE.match(line)
+        if m:
+            pos = (float(m.group(1)), float(m.group(2)), float(m.group(3) or 0.0))
+            self.mpos = self.wpos = pos
+            if not self._paused:
+                self.state = "Run" if self._running else "Idle"
+            self.status.emit({"state": self.state, "mpos": pos, "wpos": pos})
+            return True
+        if low.startswith("echo:") or low == "start" or low.startswith("marlin"):
+            self.log.emit("info", line)
+            return True
+        return False
+
     def _handle(self, line):
+        if self.marlin and line not in ("ok", "error:0") and self._handle_marlin(line):
+            return
         if line.startswith("<"):
             self._parse_status(line)
             return

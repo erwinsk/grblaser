@@ -56,7 +56,7 @@ Distro lain: `pip install -r requirements.txt` (di venv, dengan `--system-site-p
 
 ## Pintasan
 
-`Ctrl+G` grup · `Ctrl+Shift+G` pisah grup · `Ctrl+Enter` edit teks · `S` pilih · `R` persegi · `E` elips · `L` garis · `T` teks · `F` zoom bed · `F5` pratinjau · `F6` bingkai · `F7` mulai · `F8` jeda · `F9` henti · `Ctrl+I` impor · `Ctrl+E` ekspor G-code · `Ctrl+D` duplikat · panah = geser 1 mm (Shift 10, Ctrl 0,1).
+`Ctrl+G` grup · `Ctrl+Shift+G` pisah grup · `Ctrl+Enter` edit teks · `S` pilih · `R` persegi · `E` elips · `L` garis · `T` teks · `F` zoom bed · `F5` pratinjau · `Shift+F5` simulasi · `Ctrl+F7` lanjutkan job · `F6` bingkai · `F7` mulai · `F8` jeda · `F9` henti · `Ctrl+I` impor · `Ctrl+E` ekspor G-code · `Ctrl+D` duplikat · panah = geser 1 mm (Shift 10, Ctrl 0,1).
 Kanvas: roda = zoom, tombol tengah / Spasi+seret = geser, sudut kotak = skala (Shift = bebas), bulatan atas = putar (Shift = 15°).
 
 ## Struktur & tes
@@ -119,6 +119,9 @@ Arsitektur singkat: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 ## Pembaruan (v0.5)
 
 - **Rotasi bebas gambar**, **teks yang bisa diedit** (klik ganda / `Ctrl+Enter`), **pustaka bahan** (tombol 📚 Bahan… di panel Layer), **Cermin X/Y** untuk mengukir dari sisi belakang, **bingkai dengan laser menyala** (penunjuk posisi, daya rendah, konfirmasi), dan menu klik kanan kanvas untuk memindahkan laser / menjadikan titik itu awal pekerjaan.
+
+## Pembaruan (v0.6)
+Lanjutkan job dari baris N (`Ctrl+F7`), generator uji bahan (menu Susun), urutan potong 2-opt, simulasi jalur (`Shift+F5`), rotary, dan pilihan firmware GRBL / GRBL-HAL / Marlin. **Rotary dan Marlin eksperimental (hanya diuji dengan simulator), dan fungsi lanjutkan job belum diuji pada mesin sungguhan** — uji dulu tanpa bahan berharga.
 
 ## Batasan saat ini
 

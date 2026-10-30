@@ -82,6 +82,21 @@ class Device:
     air_off: str = "M9"
     baud: int = 115200
     last_port: str = ""
+    firmware: str = "grbl"       # grbl | grbl-hal | marlin (eksperimental)
+    # Rotary (sumbu Y menggerakkan pemutar): Y desain = keliling benda yang diskalakan ke gerak mesin
+    rotary: bool = False
+    rotary_mode: str = "chuck"   # chuck (jepit/rahang) | roller (rol penyangga)
+    object_diameter: float = 50.0    # mm, diameter benda di titik bakar
+    roller_diameter: float = 20.0    # mm, diameter rol (mode roller)
+    mm_per_rotation: float = 360.0   # gerak Y mesin untuk satu putaran penuh (mode chuck; 360 bila $101 dalam derajat)
+
+    def rotary_scale(self):
+        """Faktor pengali Y desain -> Y mesin (1.0 bila rotary mati)."""
+        if not self.rotary or self.object_diameter <= 0:
+            return 1.0
+        if self.rotary_mode == "roller":
+            return self.roller_diameter / self.object_diameter
+        return self.mm_per_rotation / (3.141592653589793 * self.object_diameter)
 
     # --- koordinat pengguna (yang tampil di penggaris, kursor, toolbar & properti) ---
     # Ruang desain: (0,0) kiri-atas, Y ke bawah. Koordinat pengguna = koordinat mesin kerja:

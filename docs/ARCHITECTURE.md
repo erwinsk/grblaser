@@ -14,6 +14,9 @@ Ruang desain: mm, (0,0) kiri-atas, Y ke bawah. Koordinat yang tampil di UI = koo
 | `shapes.py` | Bentuk siap pakai, boolean & offset (Shapely opsional) |
 | `preflight.py` | Pemeriksaan murni (tanpa Qt) sebelum job: `check(project, dev, grbl, only_ids)` → daftar `Issue` |
 | `autosave.py` | Snapshot proyek ditulis di thread latar; `info/load/clear` untuk pemulihan |
+| `resume.py` | Rencana lanjut job (`plan_resume`, status modal) + `LastJob` (job & kemajuan di disk) |
+| `materialtest.py` | Generator grid uji bahan (murni, tanpa Qt) |
+| `simulation.py` | Mesin simulasi jalur (segmen → gambar bertahap); dialog di `ui/simulation_dialog.py` |
 | `materials.py` | Pustaka bahan (preset layer per mesin, ekspor/impor JSON) |
 | `profiles.py` | Profil perangkat (QSettings JSON, kunci = nama) |
 | `project.py` | Berkas `.glz` (JSON; gambar PNG base64) |

@@ -1004,6 +1004,7 @@ class LaserPanel(QWidget):
             dev.baud = int(self.baud.currentText() or 115200)
             dev.last_port = self.port.currentText().strip()
             if dev.last_port:
+                s.set_firmware(dev.firmware)
                 s.connect(dev.last_port, dev.baud)
                 self.win.save_current_profile()
             else:
@@ -1149,6 +1150,10 @@ class JobPanel(QWidget):
         b3.addWidget(self.btn_pause)
         b3.addWidget(self.btn_stop)
         lay.addLayout(b3)
+        self.btn_resume = QPushButton("↻ Lanjutkan dari baris…")
+        self.btn_resume.setToolTip("Lanjutkan pekerjaan yang terhenti (alarm / daya putus), juga setelah aplikasi ditutup (Ctrl+F7)")
+        self.btn_resume.clicked.connect(self.win.resume_job)
+        lay.addWidget(self.btn_resume)
         self.bar = QProgressBar()
         self.bar.setValue(0)
         lay.addWidget(self.bar)

@@ -24,8 +24,11 @@ from .canvas import Canvas
 from .. import preflight
 from ..autosave import Autosave
 from ..materials import Materials
+from .. import resume as resume_mod
+from .. import materialtest
 from ..profiles import Profiles
-from .dialogs import ArrayDialog, DeviceDialog, MaterialsDialog, OffsetDialog, TextDialog, text_polys
+from .dialogs import (ArrayDialog, DeviceDialog, MaterialTestDialog, MaterialsDialog, OffsetDialog, ResumeDialog,
+                      TextDialog, text_polys)
 from .panels import (ConsolePanel, ImagePanel, JobPanel, LaserPanel, LayerPanel, PosSizeBar,
                      PropertiesPanel)
 from .tasks import TaskRunner
@@ -120,6 +123,7 @@ class MainWindow(QMainWindow):
         s.alarm.connect(lambda m: self.statusBar().showMessage("ALARM: " + m, 10000))
         s.status.connect(lambda info: self.lbl_state.setText(info.get("state", "")))
         s.connected_changed.connect(lambda on: self.lbl_state.setText("Terhubung" if on else "Terputus"))
+        s.connected_changed.connect(lambda on: self._update_resume_action())
 
         self._zoom_timer = QTimer(self)
         self._zoom_timer.timeout.connect(lambda: self.lbl_zoom.setText("%d%%" % round(self.canvas.zoom / 3.78 * 100)
@@ -127,6 +131,8 @@ class MainWindow(QMainWindow):
         self._zoom_timer.start(300)
 
         self.autosave = Autosave()
+        self.job_store = resume_mod.LastJob(self.autosave.dir)
+        self._resume_job = None        # job terakhir di memori: {'lines', 'n', 'prefix', 'acked'}
         self._autosaved_rev = -1
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self.autosave_now)
@@ -201,6 +207,8 @@ class MainWindow(QMainWindow):
         self.a_group = A("Grup", self.group_selection, "Ctrl+G", "Gabungkan objek terpilih menjadi satu grup (Ctrl+G)")
         self.a_ungroup = A("Pisahkan grup", self.ungroup_selection, "Ctrl+Shift+G", "Pecah grup terpilih (Ctrl+Shift+G / Ctrl+U)")
         self.a_edittext = A("Edit teks…", self.edit_text, "Ctrl+Return", "Ubah isi/font/ukuran teks terpilih (juga: klik ganda pada teks)")
+        self.a_mtest = A("Uji bahan…", self.material_test_dialog, "", "Buat grid uji kecepatan × daya (satu layer per sel)")
+        self.a_mtest_rm = A("Hapus objek & layer uji bahan", self.remove_material_test)
         self.a_ungroup.setShortcuts([QKeySequence("Ctrl+Shift+G"), QKeySequence("Ctrl+U")])
         self.a_rotcw = A("Putar 90° ↻", lambda: self.rotate_selection(90))
         self.a_rotccw = A("Putar 90° ↺", lambda: self.rotate_selection(-90))
@@ -215,10 +223,13 @@ class MainWindow(QMainWindow):
         self.a_grid.setChecked(True)
         self.a_hideprev = A("Sembunyikan pratinjau", self.invalidate_preview)
         self.a_prev = A("Pratinjau pekerjaan", self.show_preview, "F5")
+        self.a_sim = A("▶ Simulasi jalur laser…", self.show_simulation, "Shift+F5", "Animasi urutan & arah pembakaran")
         self.a_frame = A("Bingkai", self.frame_job, "F6")
         self.a_start = A("▶ Mulai", self.start_job, "F7")
         self.a_pause = A("Jeda / Lanjut", self.pause_resume, "F8")
         self.a_stop = A("■ Henti", self.stop_job, "F9")
+        self.a_resume = A("↻ Lanjutkan dari baris…", self.resume_job, "Ctrl+F7",
+                          "Lanjutkan pekerjaan yang terhenti dari baris tertentu (juga setelah aplikasi ditutup)")
         self.a_dev = A("Pengaturan perangkat…", self.device_settings)
         self.a_about = A("Tentang", self.about)
         self.a_help = A("Pintasan & petunjuk", self.help)
@@ -246,7 +257,7 @@ class MainWindow(QMainWindow):
         for a in (self.a_undo, self.a_redo, None, self.a_copy, self.a_paste, self.a_dup, self.a_del, self.a_all):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("&Susun")
-        for a in (self.a_group, self.a_ungroup, self.a_edittext, None,
+        for a in (self.a_group, self.a_ungroup, self.a_edittext, None, self.a_mtest, self.a_mtest_rm, None,
                   self.a_rotcw, self.a_rotccw, self.a_fliph, self.a_flipv, None, self.a_center, self.a_corner,
                   None, self.a_array):
             m.addSeparator() if a is None else m.addAction(a)
@@ -272,7 +283,7 @@ class MainWindow(QMainWindow):
         for d in self.docks.values():
             m.addAction(d.toggleViewAction())
         m = mb.addMenu("&Laser")
-        for a in (self.a_prev, self.a_frame, self.a_start, self.a_pause, self.a_stop, None, self.a_dev):
+        for a in (self.a_prev, self.a_sim, self.a_frame, self.a_start, self.a_pause, self.a_stop, self.a_resume, None, self.a_dev):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("Ba&ntuan")
         m.addAction(self.a_help)
@@ -564,6 +575,42 @@ class MainWindow(QMainWindow):
     def copy_selection(self):
         self.clipboard = [s.clone() for s in self.canvas.selected_shapes()]
         self.note(f"{len(self.clipboard)} objek disalin")
+
+    def material_test_dialog(self):
+        dev = self.project.device
+        dlg = MaterialTestDialog(len(self.project.layers), (dev.bed_w, dev.bed_h), self)
+        if dlg.exec_() != dlg.Accepted:
+            return False
+        p = dlg.params()
+        w, h, _l, _t = materialtest.extent(p)
+        x0, y0 = max(0.0, (dev.bed_w - w) / 2), max(0.0, (dev.bed_h - h) / 2)
+        self.push_undo()
+        try:
+            ids = materialtest.build(self.project, p, x0, y0,
+                                     lambda text, size: text_polys({"text": text, "size": size}))
+        except ValueError as e:
+            self.undo_stack.pop()
+            QMessageBox.warning(self, "Uji bahan", str(e))
+            return False
+        self.canvas.set_selection(set(ids))
+        self.layer_panel.refresh()
+        self.canvas.update()
+        self.note(f"Uji bahan dibuat: {p.cols * p.rows} layer. Coba dari daya rendah; simpan hasil terbaik lewat 📚 Bahan…", 9000)
+        return True
+
+    def remove_material_test(self):
+        self.push_undo()
+        ns, nl = materialtest.remove_test(self.project)
+        if not ns and not nl:
+            self.undo_stack.pop()
+            self.note("Tidak ada uji bahan di proyek ini.", 4000)
+            return
+        if all(L.index != self.active_layer for L in self.project.layers):
+            self.active_layer = self.project.layers[0].index
+        self.canvas.set_selection(set())
+        self.layer_panel.refresh()
+        self.canvas.update()
+        self.note(f"Uji bahan dihapus ({ns} objek, {nl} layer).", 5000)
 
     def materials_dialog(self):
         layer = self.project.layer(self.active_layer)
@@ -1266,7 +1313,7 @@ class MainWindow(QMainWindow):
             return set(self.canvas.selection)
         return None
 
-    def _run_job(self, title, on_done, gcode=False, comments=True, preview=False, need_t=False):
+    def _run_job(self, title, on_done, gcode=False, comments=True, preview=False, need_t=False, sim=False):
         """Bangun job (+G-code, +pratinjau) di thread latar. Hasil job dipakai ulang bila proyek tidak berubah."""
         dev = self.project.device
         cur = None
@@ -1294,7 +1341,7 @@ class MainWindow(QMainWindow):
                     lines = emit_gcode(job, dev, T, comments=comments, title="Grblaser " + version)
                     # pembersihan jutaan baris dilakukan di thread latar, bukan di thread UI
                     out["lines"] = lines if comments else clean_gcode(lines)
-            if preview:
+            if preview or sim:
                 segs = ops_to_segments(job.ops)
                 if (mirror[0] or mirror[1]) and len(segs):          # pratinjau mengikuti cermin
                     segs = segs.copy()
@@ -1303,7 +1350,10 @@ class MainWindow(QMainWindow):
                         segs[:, [0, 2]] = (b[0] + b[2]) - segs[:, [0, 2]]
                     if mirror[1]:
                         segs[:, [1, 3]] = (b[1] + b[3]) - segs[:, [1, 3]]
-                out["img"], _ = render_segments(segs, dev.bed_w, dev.bed_h, dev.s_max)
+                if sim:
+                    out["segs"] = segs
+                else:
+                    out["img"], _ = render_segments(segs, dev.bed_w, dev.bed_h, dev.s_max)
             return out
 
         def done(res):
@@ -1319,6 +1369,16 @@ class MainWindow(QMainWindow):
             on_done(res)
 
         return self.tasks.run(work, title, done)
+
+    def show_simulation(self):
+        self._run_job("Menyiapkan simulasi…", self._simulation_ready, sim=True)
+
+    def _simulation_ready(self, res):
+        from .simulation_dialog import SimulationDialog
+        dev = self.project.device
+        dlg = SimulationDialog(res["segs"], dev.bed_w, dev.bed_h, dev.s_max, res["job"].time_s, self)
+        self._sim_dialog = dlg
+        dlg.exec_()
 
     def show_preview(self):
         self._run_job("Membuat pratinjau…", self._preview_ready, preview=True)
@@ -1397,6 +1457,51 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
             time.sleep(0.02)
 
+    def _resumable(self):
+        """(lines, acked, keterangan) untuk job yang bisa dilanjutkan: di memori, atau dari disk (sesi sebelumnya)."""
+        rj = self._resume_job
+        if rj is not None:
+            return rj["lines"], rj["acked"], "Job terakhir (sesi ini)"
+        got = self.job_store.load()
+        if got:
+            lines, meta = got
+            when = time.strftime("%d %b %Y %H:%M", time.localtime(meta.get("time", 0)))
+            return lines, int(meta.get("acked", 0)), f"Job tersimpan dari sesi sebelumnya: {meta.get('project', '?')} ({when})"
+        return None
+
+    def _update_resume_action(self):
+        on = self.sender.connected and not self.sender._running
+        if hasattr(self, "a_resume"):
+            self.a_resume.setEnabled(on)
+        if hasattr(self, "job") and hasattr(self.job, "btn_resume"):
+            self.job.btn_resume.setEnabled(on)
+
+    def resume_job(self):
+        """Lanjutkan job yang terhenti dari baris pilihan (default: mundur BACKOFF baris dari titik berhenti)."""
+        if not self._need_ready():
+            return False
+        src = self._resumable()
+        if src is None:
+            self.note("Tidak ada pekerjaan yang bisa dilanjutkan.", 5000)
+            return False
+        lines, acked, desc = src
+        dlg = ResumeDialog(lines, resume_mod.default_resume_index(acked, len(lines)),
+                           f"{desc}\nTerakhir di-OK-kan GRBL: baris {acked} dari {len(lines)}.", self)
+        if dlg.exec_() != dlg.Accepted:
+            return False
+        n = dlg.index()
+        new, info = resume_mod.plan_resume(lines, n, self.project.device.air_on)
+        if not new:
+            return False
+        self._job_kind = "job"
+        self._job_t0 = time.time()
+        if not self.sender.start_job(new, quiet=len(new) > 300, prepared=True):
+            self.note("Gagal memulai (cek alarm / kunci).", 6000)
+            return False
+        self._resume_job = {"lines": lines, "n": info["n"], "prefix": info["prefix"], "acked": info["n"]}
+        self.note(f"Melanjutkan dari baris {n + 1} dari {len(lines)}", 6000)
+        return True
+
     def _need_ready(self):
         s = self.sender
         if self.tasks.busy:
@@ -1435,6 +1540,8 @@ class MainWindow(QMainWindow):
             self._job_t0 = time.time()
             if not self.sender.start_job(lines, quiet=len(lines) > 300, prepared=True):
                 self.note("Gagal memulai (cek alarm / kunci).", 6000)
+            else:
+                self._remember_job(lines, 0, 0)
 
         self._run_job("Menyiapkan pekerjaan…", ready, gcode=True, comments=False, preview=True, need_t=True)
 
@@ -1468,7 +1575,8 @@ class MainWindow(QMainWindow):
                 if self._need_ready():
                     self._job_kind = "job"
                     self._job_t0 = time.time()
-                    self.sender.start_job(clean, quiet=len(clean) > 300, prepared=True)
+                    if self.sender.start_job(clean, quiet=len(clean) > 300, prepared=True):
+                        self._remember_job(clean, 0, 0)
 
         self.tasks.run(work, "Membaca G-code…", done)
 
@@ -1485,7 +1593,18 @@ class MainWindow(QMainWindow):
         if self.sender.connected:
             self.sender.stop()
 
+    def _remember_job(self, lines, n, prefix):
+        """Simpan job yang sedang berjalan (memori + disk) agar bisa dilanjutkan bila berhenti."""
+        self._resume_job = {"lines": lines, "n": n, "prefix": prefix, "acked": n}
+        info = {"project": os.path.basename(self.project.path) if self.project.path else "Tanpa judul",
+                "machine": self.project.device.name}
+        self.job_store.save(lines, info)
+
     def _progress(self, done, total):
+        rj = self._resume_job
+        if rj is not None and getattr(self, "_job_kind", "") == "job":
+            rj["acked"] = rj["n"] + max(0, done - rj["prefix"])         # indeks pada daftar baris asli
+            self.job_store.update(rj["acked"])
         pct = int(100 * done / max(total, 1))
         self.job.bar.setValue(pct)
         if getattr(self, "_job_kind", "") == "job" and done > 5:
@@ -1496,6 +1615,12 @@ class MainWindow(QMainWindow):
     def _job_state(self, st):
         self._set_job_buttons(st)
         kind = getattr(self, "_job_kind", "")
+        if st == "done" and kind == "job":
+            self.job_store.update(0, done=True, force=True)      # selesai normal: tidak perlu dilanjutkan
+            self._resume_job = None
+        if st in ("stopped", "error") and kind == "job" and self._resume_job is not None:
+            self.job_store.update(self._resume_job["acked"], force=True)
+        self._update_resume_action()
         if st == "done":
             self.job.bar.setValue(100)
             if kind == "job":
